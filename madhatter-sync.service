@@ -3,7 +3,7 @@ Description=Madhatter Drop Sync Daemon
 After=network.target
 
 [Service]
-ExecStart=/home/katalyst/Documents/GitHub/maddhatterDrop/sync_madhatter.sh
+ExecStart=/usr/bin/madhatter-sync
 Restart=always
 RestartSec=10
 Environment=DISPLAY=:0

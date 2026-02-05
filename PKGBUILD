@@ -8,7 +8,7 @@ url="https://github.com/NModlin/maddhatterDrop"
 license=('MIT')
 depends=('rsync' 'inotify-tools' 'python-pyqt6' 'libnotify')
 makedepends=('git')
-source=("git+file://$HOME/Documents/GitHub/maddhatterDrop")
+source=("git+${url}.git")
 sha256sums=('SKIP')
 
 package() {
