@@ -1,6 +1,6 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# Phase 0+1+2 Verification Tests
+# Phase 0+1+2+3 Verification Tests
 # Run: bash tests/test_peer_validation.sh
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -334,45 +334,6 @@ else
 fi
 
 echo ""
-echo "=== [M3] Atomic Status Writes Tests ==="
-echo ""
-
-echo "--- Checking update_status uses temp + mv ---"
-if grep -q 'mv -f.*STATUS_FILE' ../sync_madhatter.sh; then
-    echo "  PASS: update_status uses atomic mv"
-    ((PASS++))
-else
-    echo "  FAIL: update_status does not use atomic mv"
-    ((FAIL++))
-fi
-
-echo "--- Checking temp file uses PID for uniqueness ---"
-if grep -q 'STATUS_FILE.*tmp.*\$\$' ../sync_madhatter.sh; then
-    echo "  PASS: temp file includes PID ($$) for uniqueness"
-    ((PASS++))
-else
-    echo "  FAIL: temp file does not include PID"
-    ((FAIL++))
-fi
-
-# Functional test: atomic write produces correct content
-echo "--- Functional: atomic write produces correct status ---"
-TMPDIR=$(mktemp -d)
-FAKE_STATUS="$TMPDIR/status"
-tmp="${FAKE_STATUS}.tmp.$$"
-echo "SYNCING" > "$tmp"
-mv -f "$tmp" "$FAKE_STATUS"
-content=$(cat "$FAKE_STATUS")
-if [ "$content" = "SYNCING" ]; then
-    echo "  PASS: atomic write produces correct content"
-    ((PASS++))
-else
-    echo "  FAIL: atomic write content mismatch (got: $content)"
-    ((FAIL++))
-fi
-rm -rf "$TMPDIR"
-
-echo ""
 echo "=== [O1] Systemd Watchdog Tests ==="
 echo ""
 
@@ -554,6 +515,219 @@ if [[ "$test_dir" =~ ^\>f[^+] ]]; then
     ((FAIL++))
 else
     echo "  PASS: pattern correctly rejects directory line (>d)"
+    ((PASS++))
+fi
+
+echo ""
+echo "=== [M3] Atomic Status Writes Tests ==="
+echo ""
+
+echo "--- Checking update_status uses temp + mv ---"
+if grep -q 'mv -f.*STATUS_FILE' ../sync_madhatter.sh; then
+    echo "  PASS: update_status uses atomic mv"
+    ((PASS++))
+else
+    echo "  FAIL: update_status does not use atomic mv"
+    ((FAIL++))
+fi
+
+echo "--- Checking temp file uses PID for uniqueness ---"
+if grep -q 'STATUS_FILE.*tmp.*\$\$' ../sync_madhatter.sh; then
+    echo "  PASS: temp file includes PID ($$) for uniqueness"
+    ((PASS++))
+else
+    echo "  FAIL: temp file does not include PID"
+    ((FAIL++))
+fi
+
+# Functional test: atomic write produces correct content
+echo "--- Functional: atomic write produces correct status ---"
+TMPDIR=$(mktemp -d)
+FAKE_STATUS="$TMPDIR/status"
+tmp="${FAKE_STATUS}.tmp.$$"
+echo "SYNCING" > "$tmp"
+mv -f "$tmp" "$FAKE_STATUS"
+content=$(cat "$FAKE_STATUS")
+if [ "$content" = "SYNCING" ]; then
+    echo "  PASS: atomic write produces correct content"
+    ((PASS++))
+else
+    echo "  FAIL: atomic write content mismatch (got: $content)"
+    ((FAIL++))
+fi
+rm -rf "$TMPDIR"
+
+echo ""
+echo "=== [S2] Restrictive Umask Tests ==="
+echo ""
+
+echo "--- Checking umask 077 is set ---"
+if grep -q 'umask 077' ../sync_madhatter.sh; then
+    echo "  PASS: umask 077 set at startup"
+    ((PASS++))
+else
+    echo "  FAIL: umask 077 not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking umask is before directory creation ---"
+umask_line=$(grep -n 'umask 077' ../sync_madhatter.sh | head -1 | cut -d: -f1)
+mkdir_line=$(grep -n 'mkdir -p' ../sync_madhatter.sh | head -1 | cut -d: -f1)
+if [ -n "$umask_line" ] && [ -n "$mkdir_line" ] && [ "$umask_line" -lt "$mkdir_line" ]; then
+    echo "  PASS: umask set before mkdir (line $umask_line < $mkdir_line)"
+    ((PASS++))
+else
+    echo "  FAIL: umask not positioned before directory creation"
+    ((FAIL++))
+fi
+
+# Functional test: umask 077 produces owner-only files
+echo "--- Functional: umask 077 creates owner-only files ---"
+TMPDIR=$(mktemp -d)
+(
+    umask 077
+    touch "$TMPDIR/test_file"
+    mkdir "$TMPDIR/test_dir"
+)
+file_perms=$(stat -c%a "$TMPDIR/test_file" 2>/dev/null || stat -f%Lp "$TMPDIR/test_file" 2>/dev/null)
+dir_perms=$(stat -c%a "$TMPDIR/test_dir" 2>/dev/null || stat -f%Lp "$TMPDIR/test_dir" 2>/dev/null)
+if [ "$file_perms" = "600" ] && [ "$dir_perms" = "700" ]; then
+    echo "  PASS: umask 077 produces 600 files and 700 dirs"
+    ((PASS++))
+else
+    echo "  FAIL: unexpected permissions (file=$file_perms, dir=$dir_perms)"
+    ((FAIL++))
+fi
+rm -rf "$TMPDIR"
+
+echo ""
+echo "=== [S3] Restore Integrity Check Tests ==="
+echo ""
+
+echo "--- Checking hashlib import in tray app ---"
+if grep -q 'import hashlib' ../madhatter_tray.py; then
+    echo "  PASS: hashlib imported"
+    ((PASS++))
+else
+    echo "  FAIL: hashlib not imported"
+    ((FAIL++))
+fi
+
+echo "--- Checking _sha256 method exists ---"
+if grep -q 'def _sha256' ../madhatter_tray.py; then
+    echo "  PASS: _sha256 method defined"
+    ((PASS++))
+else
+    echo "  FAIL: _sha256 method not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking integrity verification after copy ---"
+if grep -q 'src_hash != dst_hash' ../madhatter_tray.py; then
+    echo "  PASS: post-copy checksum comparison present"
+    ((PASS++))
+else
+    echo "  FAIL: post-copy checksum comparison not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking corrupted file removal on mismatch ---"
+if grep -q 'os.remove(restore_target)' ../madhatter_tray.py; then
+    echo "  PASS: corrupted file removed on checksum mismatch"
+    ((PASS++))
+else
+    echo "  FAIL: corrupted file not removed on mismatch"
+    ((FAIL++))
+fi
+
+echo "--- Checking SHA-256 shown in confirmation dialog ---"
+if grep -q 'SHA-256' ../madhatter_tray.py; then
+    echo "  PASS: SHA-256 hash shown in restore confirmation"
+    ((PASS++))
+else
+    echo "  FAIL: SHA-256 not shown in confirmation dialog"
+    ((FAIL++))
+fi
+
+# Functional test: SHA-256 computation
+echo "--- Functional: SHA-256 computation is correct ---"
+TMPDIR=$(mktemp -d)
+echo -n "test content" > "$TMPDIR/test_file"
+expected="6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72"
+actual=$(sha256sum "$TMPDIR/test_file" | cut -d' ' -f1)
+if [ "$actual" = "$expected" ]; then
+    echo "  PASS: SHA-256 computation verified"
+    ((PASS++))
+else
+    echo "  FAIL: SHA-256 mismatch (expected=$expected, got=$actual)"
+    ((FAIL++))
+fi
+rm -rf "$TMPDIR"
+
+echo ""
+echo "=== [O3] Parallel Peer Sync Tests ==="
+echo ""
+
+echo "--- Checking SYNC_PIDS array exists ---"
+if grep -q 'SYNC_PIDS=()' ../sync_madhatter.sh; then
+    echo "  PASS: SYNC_PIDS array initialized"
+    ((PASS++))
+else
+    echo "  FAIL: SYNC_PIDS array not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking peers collected into array ---"
+if grep -q 'peers+=("$peer")' ../sync_madhatter.sh; then
+    echo "  PASS: peers collected into array before sync"
+    ((PASS++))
+else
+    echo "  FAIL: peers not collected into array"
+    ((FAIL++))
+fi
+
+echo "--- Checking parallel launch with subshell ---"
+if grep -A6 'detect_conflicts.*peer' ../sync_madhatter.sh | grep -q ') &'; then
+    echo "  PASS: peer sync launched as background subshell"
+    ((PASS++))
+else
+    echo "  FAIL: peer sync not launched in parallel"
+    ((FAIL++))
+fi
+
+echo "--- Checking PIDs tracked in SYNC_PIDS ---"
+if grep -q 'SYNC_PIDS+=(' ../sync_madhatter.sh; then
+    echo "  PASS: background PIDs tracked in SYNC_PIDS array"
+    ((PASS++))
+else
+    echo "  FAIL: PIDs not tracked in SYNC_PIDS"
+    ((FAIL++))
+fi
+
+echo "--- Checking cleanup iterates SYNC_PIDS ---"
+if grep -q 'for pid in.*SYNC_PIDS' ../sync_madhatter.sh; then
+    echo "  PASS: cleanup iterates SYNC_PIDS for graceful shutdown"
+    ((PASS++))
+else
+    echo "  FAIL: cleanup does not iterate SYNC_PIDS"
+    ((FAIL++))
+fi
+
+echo "--- Checking wait collects all exit codes ---"
+if grep -q 'wait.*SYNC_PIDS\[' ../sync_madhatter.sh; then
+    echo "  PASS: wait collects exit codes from all sync processes"
+    ((PASS++))
+else
+    echo "  FAIL: wait does not collect all exit codes"
+    ((FAIL++))
+fi
+
+echo "--- Checking old RSYNC_PID removed ---"
+if grep -q 'RSYNC_PID=' ../sync_madhatter.sh; then
+    echo "  FAIL: old RSYNC_PID variable still present"
+    ((FAIL++))
+else
+    echo "  PASS: old RSYNC_PID variable removed (replaced by SYNC_PIDS)"
     ((PASS++))
 fi
 

@@ -5,8 +5,9 @@ import os
 import re
 import shutil
 import signal
+import hashlib
 import subprocess
-from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox, 
+from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox,
                              QWidget, QVBoxLayout, QListWidget, QLabel, QPushButton, QDialog)
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QTimer, QCoreApplication
@@ -53,6 +54,15 @@ class VersionBrowser(QDialog):
                     rel_path = os.path.relpath(full_path, VERSION_DIR)
                     self.list_widget.addItem(rel_path)
 
+    @staticmethod
+    def _sha256(path):
+        """[S3] Compute SHA-256 checksum of a file."""
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
     def restore_file(self):
         item = self.list_widget.currentItem()
         if not item:
@@ -67,9 +77,16 @@ class VersionBrowser(QDialog):
         sync_dir = os.path.expanduser("~/madhatterDrop")
         restore_target = os.path.join(sync_dir, original_rel)
 
+        # [S3] Compute source checksum before restore
+        try:
+            src_hash = self._sha256(src_path)
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Cannot read source file:\n{str(e)}")
+            return
+
         reply = QMessageBox.question(
             self, "Confirm Restore",
-            f"Restore this version?\n\nFrom: {rel_path}\nTo: {restore_target}",
+            f"Restore this version?\n\nFrom: {rel_path}\nTo: {restore_target}\n\nSHA-256: {src_hash[:16]}…",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -78,7 +95,20 @@ class VersionBrowser(QDialog):
         try:
             os.makedirs(os.path.dirname(restore_target), exist_ok=True)
             shutil.copy2(src_path, restore_target)
-            QMessageBox.information(self, "Restored", f"File restored to:\n{restore_target}")
+
+            # [S3] Verify integrity after copy
+            dst_hash = self._sha256(restore_target)
+            if src_hash != dst_hash:
+                os.remove(restore_target)
+                QMessageBox.critical(
+                    self, "Integrity Error",
+                    f"Checksum mismatch after restore!\n\n"
+                    f"Source:  {src_hash[:16]}…\nWritten: {dst_hash[:16]}…\n\n"
+                    "The corrupted file has been removed."
+                )
+                return
+
+            QMessageBox.information(self, "Restored", f"File restored to:\n{restore_target}\n\n✓ Integrity verified")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to restore:\n{str(e)}")
 

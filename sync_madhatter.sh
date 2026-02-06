@@ -1,6 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 
+# [S2] Restrictive umask — files 600, dirs 700 (owner-only)
+umask 077
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -26,7 +29,7 @@ SHELL_META_CHARS='[;$`|&(){}<>\\\"'"'"']'
 
 # [M4] Shutdown machinery
 SHUTTING_DOWN=0
-RSYNC_PID=""
+SYNC_PIDS=()   # [O3] Track all background sync PIDs for parallel sync
 
 # ---------------------------------------------------------------------------
 # Ensure directories exist
@@ -65,33 +68,14 @@ update_status() {
     mv -f "$tmp" "$STATUS_FILE"
 }
 
+# ---------------------------------------------------------------------------
 # [O1] Systemd watchdog — notify systemd we're alive
+# ---------------------------------------------------------------------------
 sd_notify() {
     # Only works when launched by systemd with Type=notify (NOTIFY_SOCKET set)
     if command -v systemd-notify &>/dev/null && [ -n "${NOTIFY_SOCKET:-}" ]; then
         systemd-notify "$@" 2>/dev/null || true
     fi
-}
-
-# ---------------------------------------------------------------------------
-# [S1] Peer validation
-# ---------------------------------------------------------------------------
-validate_peer() {
-    local peer="$1"
-
-    # Reject shell metacharacters outright
-    if [[ "$peer" =~ $SHELL_META_CHARS ]]; then
-        log "[WARN] Rejected peer (shell metacharacters): $peer"
-        return 1
-    fi
-
-    # Enforce [user@]host:/path format
-    if [[ ! "$peer" =~ $PEER_REGEX ]]; then
-        log "[WARN] Rejected peer (invalid format): $peer"
-        return 1
-    fi
-
-    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -151,7 +135,7 @@ detect_conflicts() {
         --exclude=".conflicts" \
         "$SYNC_DIR/" "$peer" 2>/dev/null) || return 0
 
-    # Parse itemize output for files being sent that already exist remotely
+    # Parse itemize output for files being sent that already exist remotely.
     # Format: >f..t...... path/to/file  (> = sent to remote, f = file, t = timestamp differs)
     # We only care about updates (>f), not new files (>f+)
     local conflict_count=0
@@ -186,17 +170,41 @@ detect_conflicts() {
 }
 
 # ---------------------------------------------------------------------------
+# [S1] Peer validation
+# ---------------------------------------------------------------------------
+validate_peer() {
+    local peer="$1"
+
+    # Reject shell metacharacters outright
+    if [[ "$peer" =~ $SHELL_META_CHARS ]]; then
+        log "[WARN] Rejected peer (shell metacharacters): $peer"
+        return 1
+    fi
+
+    # Enforce [user@]host:/path format
+    if [[ ! "$peer" =~ $PEER_REGEX ]]; then
+        log "[WARN] Rejected peer (invalid format): $peer"
+        return 1
+    fi
+
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # [M4] Graceful shutdown
 # ---------------------------------------------------------------------------
 cleanup() {
     SHUTTING_DOWN=1
     log "[SHUTDOWN] Signal received — shutting down gracefully."
 
-    # Wait for active sync process to finish (up to TimeoutStopSec)
-    if [[ -n "$RSYNC_PID" ]] && kill -0 "$RSYNC_PID" 2>/dev/null; then
-        log "[SHUTDOWN] Waiting for sync process (PID $RSYNC_PID) to finish..."
-        wait "$RSYNC_PID" 2>/dev/null || true
-    fi
+    # [O3] Wait for all active sync processes to finish (up to TimeoutStopSec)
+    for pid in "${SYNC_PIDS[@]}"; do
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            log "[SHUTDOWN] Waiting for sync process (PID $pid) to finish..."
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
+    SYNC_PIDS=()
 
     update_status "STOPPED"
     log "[SHUTDOWN] Madhatter Sync Engine stopped."
@@ -294,7 +302,7 @@ update_status "IDLE"
 # Sync function
 # ---------------------------------------------------------------------------
 sync_to_peers() {
-    # [M4] Abort early if shutting down
+    # Abort early if shutting down
     [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
 
     # [M2] Rotate log before sync if it's grown too large
@@ -309,48 +317,63 @@ sync_to_peers() {
         return
     fi
 
+    # [O3] Collect valid peers into an array, then sync in parallel
+    local peers=()
     while IFS= read -r peer; do
-        # Skip empty lines and comments
         [[ -z "$peer" || "$peer" =~ ^[[:space:]]*# ]] && continue
+        validate_peer "$peer" && peers+=("$peer")
+    done < "$PEERS_FILE"
 
-        # [S1] Validate before use
-        if ! validate_peer "$peer"; then
-            continue
-        fi
+    if [ ${#peers[@]} -eq 0 ]; then
+        log "No valid peers to sync."
+        update_status "IDLE"
+        return
+    fi
 
-        # [M4] Check shutdown flag before each peer
+    # [O3] Launch all peer syncs in parallel
+    SYNC_PIDS=()
+    for peer in "${peers[@]}"; do
         [[ "$SHUTTING_DOWN" -eq 1 ]] && break
 
         log "Syncing to $peer..."
 
-        # [O4] Detect conflicts before pushing
-        detect_conflicts "$peer"
+        # Each peer sync runs in a subshell: conflict detection then rsync
+        (
+            detect_conflicts "$peer"
+            rsync -avz --delete --delay-updates --exclude-from="$IGNORE_FILE" \
+                --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
+                --exclude=".conflicts" \
+                --backup --backup-dir="$VERSION_DIR" --suffix="_$(date +%Y%m%d_%H%M%S)" \
+                "$SYNC_DIR/" "$peer" >> "$LOG_FILE" 2>&1
+        ) &
+        SYNC_PIDS+=($!)
+    done
 
-        rsync -avz --delete --delay-updates --exclude-from="$IGNORE_FILE" \
-            --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
-            --exclude=".conflicts" \
-            --backup --backup-dir="$VERSION_DIR" --suffix="_$(date +%Y%m%d_%H%M%S)" \
-            "$SYNC_DIR/" "$peer" >> "$LOG_FILE" 2>&1 &
-        RSYNC_PID=$!
-
-        wait "$RSYNC_PID" 2>/dev/null
+    # [O3] Wait for all parallel syncs and collect results
+    local any_failed=0
+    for i in "${!SYNC_PIDS[@]}"; do
+        wait "${SYNC_PIDS[$i]}" 2>/dev/null
         local rc=$?
-        RSYNC_PID=""
 
-        [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
+        [[ "$SHUTTING_DOWN" -eq 1 ]] && break
 
         if [ $rc -eq 0 ]; then
-            log "Sync to $peer successful."
+            log "Sync to ${peers[$i]} successful."
         else
-            log "Error syncing to $peer (exit code $rc)."
-            update_status "ERROR"
-            notify-send -u critical "Madhatter Sync Failed" \
-                "Could not sync with $peer. Check logs."
-            return 1
+            log "Error syncing to ${peers[$i]} (exit code $rc)."
+            any_failed=1
         fi
-    done < "$PEERS_FILE"
+    done
+    SYNC_PIDS=()
 
     [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
+
+    if [ "$any_failed" -eq 1 ]; then
+        update_status "ERROR"
+        notify-send -u critical "Madhatter Sync Failed" \
+            "One or more peers failed. Check logs."
+        return 1
+    fi
 
     # [M5] Prune old versions after successful sync
     prune_versions
@@ -366,7 +389,7 @@ sync_to_peers() {
 log "[STARTUP] Running initial sync..."
 sync_to_peers || log "[STARTUP] Initial sync completed with errors, continuing to watch mode"
 
-# [O1] Tell systemd we're ready (after initial sync completes)
+# [O1] Tell systemd we're ready (Type=notify)
 sd_notify --ready
 
 # ---------------------------------------------------------------------------
@@ -374,19 +397,19 @@ sd_notify --ready
 # Triggers on: close_write, moved_to, create, delete, move
 # ---------------------------------------------------------------------------
 while [[ "$SHUTTING_DOWN" -eq 0 ]]; do
-    # [O1] Heartbeat — tell systemd we're still alive
+    # [O1] Pet the watchdog each iteration
     sd_notify WATCHDOG=1
 
     log "Watching $SYNC_DIR for changes..."
 
     # Block until a change happens
     inotifywait -r -e close_write,moved_to,create,delete,move \
-        --exclude "$VERSION_DIR" --exclude "\.sync_trigger" --exclude "\.syncignore" \
-        --exclude "$CONFLICT_DIR" \
+        --exclude "$VERSION_DIR" --exclude "$CONFLICT_DIR" \
+        --exclude "\.sync_trigger" --exclude "\.syncignore" \
         --exclude ".*\.swp" --exclude ".*\.tmp" \
         "$SYNC_DIR" >> "$LOG_FILE" 2>&1 || true
 
-    # [M4] If we were signalled while blocking, exit the loop
+    # If we were signalled while blocking, exit the loop
     [[ "$SHUTTING_DOWN" -eq 1 ]] && break
 
     # Wait a moment for settling (debounce)
