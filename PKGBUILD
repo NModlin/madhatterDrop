@@ -36,6 +36,6 @@ package() {
     
     # Create wrapper for tray app
     echo '#!/bin/sh' > "$pkgdir/usr/bin/madhatter-tray"
-    echo 'exec python /usr/share/madhatter/madhatter_tray.py "$@"' >> "$pkgdir/usr/bin/madhatter-tray"
+    echo 'exec python3 /usr/share/madhatter/madhatter_tray.py "$@"' >> "$pkgdir/usr/bin/madhatter-tray"
     chmod 755 "$pkgdir/usr/bin/madhatter-tray"
 }
