@@ -2,6 +2,8 @@
 
 import sys
 import os
+import re
+import shutil
 import signal
 import subprocess
 from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox, 
@@ -34,7 +36,11 @@ class VersionBrowser(QDialog):
         self.restore_btn = QPushButton("Restore Selected")
         self.restore_btn.clicked.connect(self.restore_file)
         layout.addWidget(self.restore_btn)
-        
+
+        self.prune_btn = QPushButton("Prune Old Versions (>7 days)")
+        self.prune_btn.clicked.connect(self.prune_versions)
+        layout.addWidget(self.prune_btn)
+
         self.setLayout(layout)
         self.load_versions()
 
@@ -51,23 +57,66 @@ class VersionBrowser(QDialog):
         item = self.list_widget.currentItem()
         if not item:
             return
-            
+
         rel_path = item.text()
         src_path = os.path.join(VERSION_DIR, rel_path)
-        # Assuming original structure is mirrored or flat backup
-        # Here we just restore to root of sync dir for simplicity or try to infer real path
-        # The script does --backup-dir=.versions so structure is preserved relative to sync root?
-        # rsync behavior with --backup-dir preserves hierarchy if relative paths used.
-        # Let's assume we restore to ~/madhatterDrop/restored_... for safety
-        
-        restore_target = os.path.expanduser(f"~/madhatterDrop/{os.path.basename(rel_path)}.restored")
-        
+
+        # rsync --backup with --suffix appends a timestamp like _20260203_190748
+        # Strip that suffix to recover the original relative path within the sync dir.
+        original_rel = re.sub(r'_\d{8}_\d{6}$', '', rel_path)
+        sync_dir = os.path.expanduser("~/madhatterDrop")
+        restore_target = os.path.join(sync_dir, original_rel)
+
+        reply = QMessageBox.question(
+            self, "Confirm Restore",
+            f"Restore this version?\n\nFrom: {rel_path}\nTo: {restore_target}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
         try:
-            import shutil
+            os.makedirs(os.path.dirname(restore_target), exist_ok=True)
             shutil.copy2(src_path, restore_target)
             QMessageBox.information(self, "Restored", f"File restored to:\n{restore_target}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to restore:\n{str(e)}")
+
+    def prune_versions(self):
+        """Delete version files older than 7 days and refresh the list."""
+        if not os.path.exists(VERSION_DIR):
+            QMessageBox.information(self, "Prune", "No versions directory found.")
+            return
+
+        max_age_days = 7
+        import time
+        cutoff = time.time() - (max_age_days * 86400)
+        pruned = 0
+
+        for root, dirs, files in os.walk(VERSION_DIR):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                try:
+                    if os.path.getmtime(fpath) < cutoff:
+                        os.remove(fpath)
+                        pruned += 1
+                except OSError:
+                    pass
+
+        # Clean up empty directories
+        for root, dirs, files in os.walk(VERSION_DIR, topdown=False):
+            for d in dirs:
+                dpath = os.path.join(root, d)
+                try:
+                    os.rmdir(dpath)
+                except OSError:
+                    pass
+
+        self.load_versions()
+        QMessageBox.information(
+            self, "Prune Complete",
+            f"Deleted {pruned} version file(s) older than {max_age_days} days."
+        )
 
 class LogViewer(QDialog):
     def __init__(self):
@@ -153,7 +202,7 @@ class MadhatterTray(QSystemTrayIcon):
             try:
                 with open(STATUS_FILE, 'r') as f:
                     status = f.read().strip()
-            except:
+            except (OSError, IOError):
                 pass
         
         if status != self.current_status:
@@ -168,6 +217,9 @@ class MadhatterTray(QSystemTrayIcon):
         elif status == "ERROR":
             self.setIcon(QIcon(os.path.join(ICON_DIR, "error.png")))
             self.setToolTip("Madhatter: Error")
+        elif status == "STOPPED":
+            self.setIcon(QIcon(os.path.join(ICON_DIR, "error.png")))
+            self.setToolTip("Madhatter: Service Stopped")
         else:
             self.setIcon(QIcon(os.path.join(ICON_DIR, "idle.png")))
             self.setToolTip("Madhatter: Idle")
@@ -184,7 +236,7 @@ class MadhatterTray(QSystemTrayIcon):
         folder = os.path.expanduser("~/madhatterDrop")
         trigger_file = os.path.join(folder, ".sync_trigger")
         subprocess.run(['touch', trigger_file])
-        self.showMessage("Sync Triggered", "Manual sync requested.", QSystemTrayIcon.MessageIcon.Information)
+        self._notify("Sync Triggered", "Manual sync requested.")
 
     def view_logs(self):
         self.log_viewer = LogViewer()
@@ -195,20 +247,13 @@ class MadhatterTray(QSystemTrayIcon):
         self.version_browser.show()
 
     def edit_ignore(self):
-        editor = os.environ.get("EDITOR", "nano")
-        # Need to open in a terminal if it's a terminal editor
-        # Sway specific: try with 'foot' or 'alacritty' or 'kitty' if detected, 
-        # or just xdg-open which might open a GUI editor.
-        if os.path.exists(IGNORE_FILE):
-             subprocess.Popen(['xdg-open', IGNORE_FILE])
-        else:
-             subprocess.Popen(['touch', IGNORE_FILE])
-             subprocess.Popen(['xdg-open', IGNORE_FILE])
+        # Ensure the file exists before opening it
+        if not os.path.exists(IGNORE_FILE):
+            open(IGNORE_FILE, 'a').close()
+        subprocess.Popen(['xdg-open', IGNORE_FILE])
 
-    def showMessage(self, title, msg, icon):
-        # Use notify-send for better Wayland compatibility if needed, 
-        # but QSystemTrayIcon.showMessage might work with XWayland or native.
-        # However, user requested "gdbus or notify-send" for notifications.
+    def _notify(self, title, msg):
+        """Send a desktop notification via notify-send (Wayland-compatible)."""
         subprocess.Popen(['notify-send', title, msg])
 
     def quit_app(self):

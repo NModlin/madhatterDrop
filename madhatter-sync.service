@@ -4,8 +4,11 @@ After=network.target
 
 [Service]
 ExecStart=/usr/bin/madhatter-sync
-Restart=always
+Restart=on-failure
 RestartSec=10
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 

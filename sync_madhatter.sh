@@ -11,10 +11,21 @@ LOG_FILE="$HOME/.cache/madhatter/sync.log"
 VERSION_DIR="$SYNC_DIR/.versions"
 IGNORE_FILE="$SYNC_DIR/.syncignore"
 
+# [M2] Log rotation config
+MAX_LOG_BYTES=$((10 * 1024 * 1024))   # 10 MB
+MAX_LOG_FILES=3
+
+# [M5] Version pruning config
+MAX_VERSION_AGE_DAYS=7
+
 # Peer format: [user@]hostname:/remote/path  OR  [user@]IP:/remote/path
 # Rejects any entry containing shell metacharacters: ; $ ` | & ( ) { } < > \ ' "
 PEER_REGEX='^[a-zA-Z0-9._-]+(@[a-zA-Z0-9._-]+)?:[a-zA-Z0-9/._ -]+$'
 SHELL_META_CHARS='[;$`|&(){}<>\\\"'"'"']'
+
+# [M4] Shutdown machinery
+SHUTTING_DOWN=0
+RSYNC_PID=""
 
 # ---------------------------------------------------------------------------
 # Ensure directories exist
@@ -45,8 +56,11 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# [M3] Atomic status write — write to temp then mv to avoid TOCTOU races
 update_status() {
-    echo "$1" > "$STATUS_FILE"
+    local tmp="${STATUS_FILE}.tmp.$$"
+    echo "$1" > "$tmp"
+    mv -f "$tmp" "$STATUS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -71,10 +85,142 @@ validate_peer() {
 }
 
 # ---------------------------------------------------------------------------
+# [M2] Log rotation — rotate when log exceeds MAX_LOG_BYTES
+# ---------------------------------------------------------------------------
+rotate_log() {
+    if [ ! -f "$LOG_FILE" ]; then
+        return
+    fi
+    local size
+    size=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "$size" -lt "$MAX_LOG_BYTES" ]; then
+        return
+    fi
+    # Shift rotated files: .3 deleted, .2→.3, .1→.2, current→.1
+    local i=$MAX_LOG_FILES
+    while [ "$i" -gt 1 ]; do
+        local prev=$((i - 1))
+        if [ -f "$LOG_FILE.$prev" ]; then
+            mv "$LOG_FILE.$prev" "$LOG_FILE.$i"
+        fi
+        i=$prev
+    done
+    mv "$LOG_FILE" "$LOG_FILE.1"
+    touch "$LOG_FILE"
+    log "[ROTATE] Log rotated (was ${size} bytes)"
+}
+
+# ---------------------------------------------------------------------------
+# [M5] Version pruning — delete versions older than MAX_VERSION_AGE_DAYS
+# ---------------------------------------------------------------------------
+prune_versions() {
+    if [ ! -d "$VERSION_DIR" ]; then
+        return
+    fi
+    local count
+    count=$(find "$VERSION_DIR" -type f -mtime +"$MAX_VERSION_AGE_DAYS" -delete -print 2>/dev/null | wc -l)
+    if [ "$count" -gt 0 ]; then
+        log "[PRUNE] Deleted $count version file(s) older than $MAX_VERSION_AGE_DAYS days"
+        # Clean up empty directories left behind
+        find "$VERSION_DIR" -type d -empty -delete 2>/dev/null || true
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# [M4] Graceful shutdown
+# ---------------------------------------------------------------------------
+cleanup() {
+    SHUTTING_DOWN=1
+    log "[SHUTDOWN] Signal received — shutting down gracefully."
+
+    # Wait for active sync process to finish (up to TimeoutStopSec)
+    if [[ -n "$RSYNC_PID" ]] && kill -0 "$RSYNC_PID" 2>/dev/null; then
+        log "[SHUTDOWN] Waiting for sync process (PID $RSYNC_PID) to finish..."
+        wait "$RSYNC_PID" 2>/dev/null || true
+    fi
+
+    update_status "STOPPED"
+    log "[SHUTDOWN] Madhatter Sync Engine stopped."
+    exit 0
+}
+
+trap cleanup SIGTERM SIGINT EXIT
+
+# ---------------------------------------------------------------------------
+# [M1] --check-peers: test SSH reachability and exit
+# ---------------------------------------------------------------------------
+check_peers() {
+    if [ ! -f "$PEERS_FILE" ] || [ ! -s "$PEERS_FILE" ]; then
+        echo "No peers defined in $PEERS_FILE."
+        exit 1
+    fi
+
+    local total=0 reachable=0 unreachable=0 invalid=0
+
+    while IFS= read -r peer; do
+        [[ -z "$peer" || "$peer" =~ ^[[:space:]]*# ]] && continue
+
+        if ! validate_peer "$peer"; then
+            echo "  INVALID  $peer"
+            ((invalid++))
+            ((total++))
+            continue
+        fi
+
+        # Extract host portion (everything before the colon)
+        local host="${peer%%:*}"
+
+        echo -n "  Testing  $peer ... "
+        if ssh -n -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+               "$host" true 2>/dev/null; then
+            echo "OK"
+            ((reachable++))
+        else
+            echo "UNREACHABLE"
+            ((unreachable++))
+        fi
+        ((total++))
+    done < "$PEERS_FILE"
+
+    echo ""
+    echo "Results: $total peers — $reachable reachable, $unreachable unreachable, $invalid invalid"
+
+    if [ "$unreachable" -gt 0 ] || [ "$invalid" -gt 0 ]; then
+        exit 1
+    fi
+    exit 0
+}
+
+# Handle CLI flags
+case "${1:-}" in
+    --check-peers)
+        check_peers
+        ;;
+    --help|-h)
+        echo "Usage: $(basename "$0") [OPTIONS]"
+        echo ""
+        echo "Options:"
+        echo "  --check-peers   Test SSH reachability of all configured peers and exit"
+        echo "  --help, -h      Show this help message"
+        echo ""
+        echo "Without options, starts the sync daemon (watch + sync loop)."
+        exit 0
+        ;;
+    "")
+        # No flag — continue to daemon mode below
+        ;;
+    *)
+        echo "Unknown option: $1"
+        echo "Run '$(basename "$0") --help' for usage."
+        exit 1
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Dependency check
 # ---------------------------------------------------------------------------
 for cmd in rsync inotifywait; do
-    if ! command -v $cmd &> /dev/null; then
+    if ! command -v "$cmd" &> /dev/null; then
         log "Error: $cmd could not be found."
         update_status "ERROR"
         notify-send -u critical "Madhatter Sync Error" "Missing dependency: $cmd"
@@ -89,6 +235,12 @@ update_status "IDLE"
 # Sync function
 # ---------------------------------------------------------------------------
 sync_to_peers() {
+    # [M4] Abort early if shutting down
+    [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
+
+    # [M2] Rotate log before sync if it's grown too large
+    rotate_log
+
     update_status "SYNCING"
 
     # Read peers from config file (one per line)
@@ -107,17 +259,27 @@ sync_to_peers() {
             continue
         fi
 
+        # [M4] Check shutdown flag before each peer
+        [[ "$SHUTTING_DOWN" -eq 1 ]] && break
+
         log "Syncing to $peer..."
 
         rsync -avz --delete --delay-updates --exclude-from="$IGNORE_FILE" \
             --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
             --backup --backup-dir="$VERSION_DIR" --suffix="_$(date +%Y%m%d_%H%M%S)" \
-            "$SYNC_DIR/" "$peer" >> "$LOG_FILE" 2>&1
+            "$SYNC_DIR/" "$peer" >> "$LOG_FILE" 2>&1 &
+        RSYNC_PID=$!
 
-        if [ $? -eq 0 ]; then
+        wait "$RSYNC_PID" 2>/dev/null
+        local rc=$?
+        RSYNC_PID=""
+
+        [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
+
+        if [ $rc -eq 0 ]; then
             log "Sync to $peer successful."
         else
-            log "Error syncing to $peer (exit code $?)."
+            log "Error syncing to $peer (exit code $rc)."
             update_status "ERROR"
             notify-send -u critical "Madhatter Sync Failed" \
                 "Could not sync with $peer. Check logs."
@@ -125,14 +287,27 @@ sync_to_peers() {
         fi
     done < "$PEERS_FILE"
 
-    update_status "IDLE"
+    [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
+
+    # [M5] Prune old versions after successful sync
+    prune_versions
+
+    if [[ "$SHUTTING_DOWN" -eq 0 ]]; then
+        update_status "IDLE"
+    fi
 }
+
+# ---------------------------------------------------------------------------
+# [O2] Initial sync on startup — run once before entering the watch loop
+# ---------------------------------------------------------------------------
+log "[STARTUP] Running initial sync..."
+sync_to_peers || log "[STARTUP] Initial sync completed with errors, continuing to watch mode"
 
 # ---------------------------------------------------------------------------
 # Watch loop
 # Triggers on: close_write, moved_to, create, delete, move
 # ---------------------------------------------------------------------------
-while true; do
+while [[ "$SHUTTING_DOWN" -eq 0 ]]; do
     log "Watching $SYNC_DIR for changes..."
 
     # Block until a change happens
@@ -141,10 +316,13 @@ while true; do
         --exclude ".*\.swp" --exclude ".*\.tmp" \
         "$SYNC_DIR" >> "$LOG_FILE" 2>&1 || true
 
+    # [M4] If we were signalled while blocking, exit the loop
+    [[ "$SHUTTING_DOWN" -eq 1 ]] && break
+
     # Wait a moment for settling (debounce)
     sleep 2
 
-    sync_to_peers
+    sync_to_peers || true
 
     # Wait before loop restarts to avoid rapid-fire loops on mass changes
     sleep 1
