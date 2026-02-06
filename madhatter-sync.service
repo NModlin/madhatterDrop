@@ -3,10 +3,12 @@ Description=Madhatter Drop Sync Daemon
 After=network.target
 
 [Service]
+Type=notify
 ExecStart=/usr/bin/madhatter-sync
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
+WatchdogSec=120
 KillMode=mixed
 KillSignal=SIGTERM
 Environment=DISPLAY=:0

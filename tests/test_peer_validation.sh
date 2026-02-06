@@ -1,6 +1,6 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# Phase 0+1 Verification Tests
+# Phase 0+1+2 Verification Tests
 # Run: bash tests/test_peer_validation.sh
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -371,6 +371,191 @@ else
     ((FAIL++))
 fi
 rm -rf "$TMPDIR"
+
+echo ""
+echo "=== [O1] Systemd Watchdog Tests ==="
+echo ""
+
+echo "--- Checking sd_notify function exists ---"
+if grep -q 'sd_notify()' ../sync_madhatter.sh; then
+    echo "  PASS: sd_notify function defined"
+    ((PASS++))
+else
+    echo "  FAIL: sd_notify function not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking Type=notify in service file ---"
+if grep -q 'Type=notify' ../madhatter-sync.service; then
+    echo "  PASS: Type=notify configured"
+    ((PASS++))
+else
+    echo "  FAIL: Type=notify missing from service file"
+    ((FAIL++))
+fi
+
+echo "--- Checking WatchdogSec in service file ---"
+if grep -q 'WatchdogSec=' ../madhatter-sync.service; then
+    echo "  PASS: WatchdogSec configured"
+    ((PASS++))
+else
+    echo "  FAIL: WatchdogSec missing from service file"
+    ((FAIL++))
+fi
+
+echo "--- Checking sd_notify --ready called after startup ---"
+if grep -q 'sd_notify --ready' ../sync_madhatter.sh; then
+    echo "  PASS: sd_notify --ready called"
+    ((PASS++))
+else
+    echo "  FAIL: sd_notify --ready not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking sd_notify --ready is after initial sync ---"
+ready_line=$(grep -n 'sd_notify --ready' ../sync_madhatter.sh | head -1 | cut -d: -f1)
+startup_line=$(grep -n 'STARTUP.*Running initial sync' ../sync_madhatter.sh | head -1 | cut -d: -f1)
+if [ -n "$ready_line" ] && [ -n "$startup_line" ] && [ "$ready_line" -gt "$startup_line" ]; then
+    echo "  PASS: sd_notify --ready after initial sync (line $ready_line > $startup_line)"
+    ((PASS++))
+else
+    echo "  FAIL: sd_notify --ready not positioned after initial sync"
+    ((FAIL++))
+fi
+
+echo "--- Checking WATCHDOG=1 in watch loop ---"
+if grep -q 'sd_notify WATCHDOG=1' ../sync_madhatter.sh; then
+    echo "  PASS: WATCHDOG=1 heartbeat in watch loop"
+    ((PASS++))
+else
+    echo "  FAIL: WATCHDOG=1 heartbeat not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking sd_notify guards NOTIFY_SOCKET ---"
+if grep -q 'NOTIFY_SOCKET' ../sync_madhatter.sh; then
+    echo "  PASS: sd_notify checks NOTIFY_SOCKET (safe outside systemd)"
+    ((PASS++))
+else
+    echo "  FAIL: sd_notify does not check NOTIFY_SOCKET"
+    ((FAIL++))
+fi
+
+echo ""
+echo "=== [O4] Conflict Detection Tests ==="
+echo ""
+
+echo "--- Checking CONFLICT_DIR config ---"
+if grep -q 'CONFLICT_DIR=' ../sync_madhatter.sh; then
+    echo "  PASS: CONFLICT_DIR configured"
+    ((PASS++))
+else
+    echo "  FAIL: CONFLICT_DIR not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking .conflicts directory created ---"
+if grep -q 'mkdir -p "$CONFLICT_DIR"' ../sync_madhatter.sh; then
+    echo "  PASS: .conflicts directory created at startup"
+    ((PASS++))
+else
+    echo "  FAIL: .conflicts directory not created"
+    ((FAIL++))
+fi
+
+echo "--- Checking detect_conflicts function exists ---"
+if grep -q 'detect_conflicts()' ../sync_madhatter.sh; then
+    echo "  PASS: detect_conflicts function defined"
+    ((PASS++))
+else
+    echo "  FAIL: detect_conflicts function not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking detect_conflicts called before rsync push ---"
+detect_line=$(grep -n 'detect_conflicts "$peer"' ../sync_madhatter.sh | head -1 | cut -d: -f1)
+rsync_push_line=$(grep -n 'rsync -avz --delete' ../sync_madhatter.sh | head -1 | cut -d: -f1)
+if [ -n "$detect_line" ] && [ -n "$rsync_push_line" ] && [ "$detect_line" -lt "$rsync_push_line" ]; then
+    echo "  PASS: detect_conflicts before rsync push (line $detect_line < $rsync_push_line)"
+    ((PASS++))
+else
+    echo "  FAIL: detect_conflicts not positioned before rsync push"
+    ((FAIL++))
+fi
+
+echo "--- Checking .conflicts excluded from rsync push ---"
+if grep -A5 'rsync -avz --delete' ../sync_madhatter.sh | grep -q '\.conflicts'; then
+    echo "  PASS: .conflicts excluded from rsync push"
+    ((PASS++))
+else
+    echo "  FAIL: .conflicts not excluded from rsync push"
+    ((FAIL++))
+fi
+
+echo "--- Checking .conflicts excluded from inotifywait ---"
+if grep -A3 'inotifywait' ../sync_madhatter.sh | grep -q 'CONFLICT_DIR'; then
+    echo "  PASS: .conflicts excluded from inotifywait"
+    ((PASS++))
+else
+    echo "  FAIL: .conflicts not excluded from inotifywait"
+    ((FAIL++))
+fi
+
+echo "--- Checking dry-run rsync used for conflict detection ---"
+if grep -q 'rsync -avzn --itemize-changes' ../sync_madhatter.sh; then
+    echo "  PASS: dry-run rsync with --itemize-changes used"
+    ((PASS++))
+else
+    echo "  FAIL: dry-run rsync not found in detect_conflicts"
+    ((FAIL++))
+fi
+
+echo "--- Checking conflict pattern matches >f (update, not create) ---"
+if grep -q '>f\[^+\]' ../sync_madhatter.sh; then
+    echo "  PASS: regex filters updates (>f) excluding creates (>f+)"
+    ((PASS++))
+else
+    echo "  FAIL: conflict pattern not filtering correctly"
+    ((FAIL++))
+fi
+
+echo "--- Checking [CONFLICT] log message ---"
+if grep -q '\[CONFLICT\]' ../sync_madhatter.sh; then
+    echo "  PASS: [CONFLICT] log tag present"
+    ((PASS++))
+else
+    echo "  FAIL: [CONFLICT] log tag not found"
+    ((FAIL++))
+fi
+
+# Functional test: verify rsync itemize output parsing pattern
+echo "--- Functional: rsync itemize pattern matching ---"
+test_line=">f..t...... path/to/file.txt"
+if [[ "$test_line" =~ ^\>f[^+] ]]; then
+    echo "  PASS: pattern matches update line (>f..t)"
+    ((PASS++))
+else
+    echo "  FAIL: pattern does not match update line"
+    ((FAIL++))
+fi
+
+test_create=">f+++++++++ new_file.txt"
+if [[ "$test_create" =~ ^\>f[^+] ]]; then
+    echo "  FAIL: pattern incorrectly matches create line (>f+++)"
+    ((FAIL++))
+else
+    echo "  PASS: pattern correctly rejects create line (>f+++)"
+    ((PASS++))
+fi
+
+test_dir=">d..t...... some_dir/"
+if [[ "$test_dir" =~ ^\>f[^+] ]]; then
+    echo "  FAIL: pattern incorrectly matches directory line (>d)"
+    ((FAIL++))
+else
+    echo "  PASS: pattern correctly rejects directory line (>d)"
+    ((PASS++))
+fi
 
 echo ""
 echo "==========================================="

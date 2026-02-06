@@ -9,6 +9,7 @@ PEERS_FILE="$HOME/.config/madhatter/peers"
 STATUS_FILE="$HOME/.cache/madhatter/status"
 LOG_FILE="$HOME/.cache/madhatter/sync.log"
 VERSION_DIR="$SYNC_DIR/.versions"
+CONFLICT_DIR="$SYNC_DIR/.conflicts"
 IGNORE_FILE="$SYNC_DIR/.syncignore"
 
 # [M2] Log rotation config
@@ -34,6 +35,7 @@ mkdir -p "$SYNC_DIR"
 mkdir -p "$(dirname "$STATUS_FILE")"
 mkdir -p "$(dirname "$PEERS_FILE")"
 mkdir -p "$VERSION_DIR"
+mkdir -p "$CONFLICT_DIR"
 touch "$LOG_FILE"
 touch "$IGNORE_FILE"
 
@@ -61,6 +63,14 @@ update_status() {
     local tmp="${STATUS_FILE}.tmp.$$"
     echo "$1" > "$tmp"
     mv -f "$tmp" "$STATUS_FILE"
+}
+
+# [O1] Systemd watchdog — notify systemd we're alive
+sd_notify() {
+    # Only works when launched by systemd with Type=notify (NOTIFY_SOCKET set)
+    if command -v systemd-notify &>/dev/null && [ -n "${NOTIFY_SOCKET:-}" ]; then
+        systemd-notify "$@" 2>/dev/null || true
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -123,6 +133,55 @@ prune_versions() {
         log "[PRUNE] Deleted $count version file(s) older than $MAX_VERSION_AGE_DAYS days"
         # Clean up empty directories left behind
         find "$VERSION_DIR" -type d -empty -delete 2>/dev/null || true
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# [O4] Conflict detection — save remote versions that would be overwritten
+# ---------------------------------------------------------------------------
+detect_conflicts() {
+    local peer="$1"
+    local host="${peer%%:*}"
+    local peer_label="${host//[^a-zA-Z0-9._-]/_}"
+
+    # Dry-run rsync to find files that would be updated on the remote
+    local dry_output
+    dry_output=$(rsync -avzn --itemize-changes --exclude-from="$IGNORE_FILE" \
+        --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
+        --exclude=".conflicts" \
+        "$SYNC_DIR/" "$peer" 2>/dev/null) || return 0
+
+    # Parse itemize output for files being sent that already exist remotely
+    # Format: >f..t...... path/to/file  (> = sent to remote, f = file, t = timestamp differs)
+    # We only care about updates (>f), not new files (>f+)
+    local conflict_count=0
+    while IFS= read -r line; do
+        # Match lines like ">f..t...... some/file" (update, not create >f+++)
+        if [[ "$line" =~ ^\>f[^+] ]]; then
+            # Extract the filename (everything after the itemize flags + space)
+            local rel_file="${line#* }"
+            # Trim leading/trailing whitespace
+            rel_file="${rel_file#"${rel_file%%[![:space:]]*}"}"
+            rel_file="${rel_file%"${rel_file##*[![:space:]]}"}"
+
+            if [ -z "$rel_file" ]; then
+                continue
+            fi
+
+            # Fetch the remote version to .conflicts/ before we overwrite it
+            local conflict_dest="$CONFLICT_DIR/$peer_label/$rel_file"
+            mkdir -p "$(dirname "$conflict_dest")"
+
+            if rsync -az "$peer/$rel_file" "$conflict_dest" 2>/dev/null; then
+                ((conflict_count++))
+            fi
+        fi
+    done <<< "$dry_output"
+
+    if [ "$conflict_count" -gt 0 ]; then
+        log "[CONFLICT] Saved $conflict_count remote file(s) from $peer to $CONFLICT_DIR/$peer_label/"
+        notify-send -u normal "Madhatter Sync — Conflicts" \
+            "$conflict_count file(s) had remote changes. Saved to .conflicts/$peer_label/"
     fi
 }
 
@@ -264,8 +323,12 @@ sync_to_peers() {
 
         log "Syncing to $peer..."
 
+        # [O4] Detect conflicts before pushing
+        detect_conflicts "$peer"
+
         rsync -avz --delete --delay-updates --exclude-from="$IGNORE_FILE" \
             --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
+            --exclude=".conflicts" \
             --backup --backup-dir="$VERSION_DIR" --suffix="_$(date +%Y%m%d_%H%M%S)" \
             "$SYNC_DIR/" "$peer" >> "$LOG_FILE" 2>&1 &
         RSYNC_PID=$!
@@ -303,16 +366,23 @@ sync_to_peers() {
 log "[STARTUP] Running initial sync..."
 sync_to_peers || log "[STARTUP] Initial sync completed with errors, continuing to watch mode"
 
+# [O1] Tell systemd we're ready (after initial sync completes)
+sd_notify --ready
+
 # ---------------------------------------------------------------------------
 # Watch loop
 # Triggers on: close_write, moved_to, create, delete, move
 # ---------------------------------------------------------------------------
 while [[ "$SHUTTING_DOWN" -eq 0 ]]; do
+    # [O1] Heartbeat — tell systemd we're still alive
+    sd_notify WATCHDOG=1
+
     log "Watching $SYNC_DIR for changes..."
 
     # Block until a change happens
     inotifywait -r -e close_write,moved_to,create,delete,move \
         --exclude "$VERSION_DIR" --exclude "\.sync_trigger" --exclude "\.syncignore" \
+        --exclude "$CONFLICT_DIR" \
         --exclude ".*\.swp" --exclude ".*\.tmp" \
         "$SYNC_DIR" >> "$LOG_FILE" 2>&1 || true
 
