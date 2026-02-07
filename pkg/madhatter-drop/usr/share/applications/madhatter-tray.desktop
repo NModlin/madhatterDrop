@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Madhatter Drop
+Comment=P2P Delta Sync Tool
+Exec=madhatter-tray
+Icon=madhatter-drop
+Terminal=false
+Type=Application
+Categories=Utility;Network;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

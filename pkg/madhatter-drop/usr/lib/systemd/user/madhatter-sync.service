@@ -1,0 +1,15 @@
+[Unit]
+Description=Madhatter Drop Sync Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/madhatter-sync
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target
