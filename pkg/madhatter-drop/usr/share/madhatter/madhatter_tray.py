@@ -9,7 +9,7 @@ import hashlib
 import subprocess
 from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox,
                              QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
-                             QLabel, QPushButton, QDialog, QListWidgetItem)
+                             QLabel, QPushButton, QDialog)
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QTimer, QCoreApplication
 
@@ -502,12 +502,6 @@ class ConflictBrowser(QDialog):
                 break
 
 
-
-try:
-    from madhatter_discovery import DiscoveryManager
-except ImportError:
-    DiscoveryManager = None
-
 class PeerManager(QDialog):
     """Dialog to add, remove, and test peers from the tray app."""
 
@@ -517,9 +511,7 @@ class PeerManager(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Madhatter Peer Manager")
-        self.resize(600, 450)
-
-        self.discovery = DiscoveryManager() if DiscoveryManager else None
+        self.resize(500, 350)
 
         layout = QVBoxLayout()
         layout.addWidget(QLabel("Configured Peers:"))
@@ -527,24 +519,8 @@ class PeerManager(QDialog):
         self.list_widget = QListWidget()
         layout.addWidget(self.list_widget)
 
-        # Discovery Area
-        if self.discovery and self.discovery.is_available():
-            disc_group = QVBoxLayout()
-            self.scan_btn = QPushButton("Scan for Local Peers (Avahi/mDNS)")
-            self.scan_btn.clicked.connect(self.scan_network)
-            disc_group.addWidget(self.scan_btn)
-            
-            self.disc_list = QListWidget()
-            self.disc_list.setMaximumHeight(100)
-            self.disc_list.itemDoubleClicked.connect(self.add_discovered_peer)
-            disc_group.addWidget(self.disc_list)
-            
-            layout.addLayout(disc_group)
-        else:
-            layout.addWidget(QLabel("<i>Avahi automated discovery not available. Install 'avahi-utils' to enable.</i>"))
-
         btn_row = QHBoxLayout()
-        self.add_btn = QPushButton("Add Manually")
+        self.add_btn = QPushButton("Add Peer")
         self.add_btn.clicked.connect(self.add_peer)
         btn_row.addWidget(self.add_btn)
 
@@ -552,7 +528,7 @@ class PeerManager(QDialog):
         self.remove_btn.clicked.connect(self.remove_peer)
         btn_row.addWidget(self.remove_btn)
 
-        self.test_btn = QPushButton("Test Connection")
+        self.test_btn = QPushButton("Test Peer")
         self.test_btn.clicked.connect(self.test_peer)
         btn_row.addWidget(self.test_btn)
 
@@ -591,84 +567,6 @@ class PeerManager(QDialog):
         except OSError as e:
             QMessageBox.critical(self, "Error", f"Failed to save peers:\n{e}")
 
-    def scan_network(self):
-        """Scan for peers using Avahi."""
-        if not self.discovery:
-            return
-            
-        self.scan_btn.setEnabled(False)
-        self.scan_btn.setText("Scanning...")
-        self.disc_list.clear()
-        QApplication.processEvents() # Force UI update
-        
-        peers = self.discovery.browse_peers()
-        
-        self.scan_btn.setEnabled(True)
-        self.scan_btn.setText("Scan for Local Peers (Avahi/mDNS)")
-        
-        if not peers:
-            self.disc_list.addItem("No peers found.")
-            return
-
-        for p in peers:
-            # Display: "Hostname (IP) - User: X"
-            label = f"{p['hostname']} ({p['ip']}) - User: {p.get('user', '?')}"
-            item = QListWidget.item(self.disc_list)
-            # Store raw data for retrieval
-            # QListWidgetItem doesn't hold arbitrary data easily without subclassing or setData(UserRole)
-            # We'll construct the connection string and store it in UserRole (256)
-            
-            # Construct suggested peer string: user@ip:/home/user/madhatterDrop
-            # We guess the path based on standard layout, user can edit.
-            user = p.get('user', 'user')
-            ip = p['ip']
-            # Default path assumption
-            path = f"/home/{user}/madhatterDrop"
-            peer_str = f"{user}@{ip}:{path}"
-            
-            list_item = QListWidgetItem(label)
-            list_item.setData(256, peer_str)
-            self.disc_list.addItem(list_item)
-            
-        QMessageBox.information(self, "Scan Complete", f"Found {len(peers)} peer(s). Double-click to add.")
-
-    def add_discovered_peer(self, item):
-        """Handle double-click on discovered peer."""
-        peer_str = item.data(256)
-        if not peer_str:
-            return
-            
-        # Prompt user to confirm/edit
-        from PyQt6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(
-            self, "Add Peer",
-            "Confirm peer details (user@host:/path):",
-            text=peer_str
-        )
-        
-        if ok and text.strip():
-            self._add_peer_str(text.strip())
-            
-            # Offer to pair (ssh-copy-id)
-            reply = QMessageBox.question(
-                self, "Pair Device?",
-                f"Do you want to copy your SSH key to {text.strip()} now?\n(Requires password)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self._run_ssh_copy_id(text.strip())
-
-    def _add_peer_str(self, peer):
-        if not self.PEER_REGEX.match(peer):
-            QMessageBox.warning(self, "Invalid Peer", "Invalid format.")
-            return
-        # Check duplicates
-        for i in range(self.list_widget.count()):
-            if self.list_widget.item(i).text() == peer:
-                return
-        self.list_widget.addItem(peer)
-        self._save_peers()
-
     def add_peer(self):
         """Prompt for a new peer and validate format."""
         from PyQt6.QtWidgets import QInputDialog
@@ -678,7 +576,21 @@ class PeerManager(QDialog):
         )
         if not ok or not text.strip():
             return
-        self._add_peer_str(text.strip())
+        peer = text.strip()
+        if not self.PEER_REGEX.match(peer):
+            QMessageBox.warning(
+                self, "Invalid Peer",
+                f"Peer format is invalid:\n{peer}\n\n"
+                "Expected: [user@]host:/path"
+            )
+            return
+        # Check for duplicates
+        for i in range(self.list_widget.count()):
+            if self.list_widget.item(i).text() == peer:
+                QMessageBox.information(self, "Duplicate", "This peer is already configured.")
+                return
+        self.list_widget.addItem(peer)
+        self._save_peers()
 
     def remove_peer(self):
         """Remove the selected peer."""
@@ -704,7 +616,6 @@ class PeerManager(QDialog):
         peer = item.text()
         host = peer.split(':')[0]
         try:
-            # -o BatchMode=yes prevents password prompt hanging
             result = subprocess.run(
                 ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', host, 'exit'],
                 capture_output=True, timeout=10
@@ -715,46 +626,19 @@ class PeerManager(QDialog):
                 stderr = result.stderr.decode(errors='replace').strip()
                 QMessageBox.warning(
                     self, "Peer Unreachable",
-                    f"✗ {host} is not reachable.\n\n{stderr}\n\nHint: Did you copy your SSH key?"
+                    f"✗ {host} is not reachable.\n\n{stderr}"
                 )
         except subprocess.TimeoutExpired:
             QMessageBox.warning(self, "Timeout", f"SSH connection to {host} timed out (5s).")
         except FileNotFoundError:
             QMessageBox.critical(self, "Error", "ssh command not found.")
 
-    def _run_ssh_copy_id(self, peer):
-        """Run ssh-copy-id in a terminal."""
-        host = peer.split(':')[0]
-        # We need to run this in a terminal so user can type password.
-        # Try common terminals: gnome-terminal, konsole, xterm
-        cmd = f"ssh-copy-id {host}; echo 'Press Enter to close...'; read"
-        
-        terminals = [
-            ['gnome-terminal', '--', 'bash', '-c', cmd],
-            ['konsole', '-e', 'bash', '-c', cmd],
-            ['xterm', '-e', 'bash', '-c', cmd],
-            ['uxterm', '-e', 'bash', '-c', cmd]
-        ]
-        
-        launched = False
-        for t in terminals:
-            if shutil.which(t[0]):
-                subprocess.Popen(t)
-                launched = True
-                break
-        
-        if not launched:
-            QMessageBox.warning(self, "Terminal Not Found", 
-                f"Could not launch a terminal to run ssh-copy-id.\nPlease run this manually:\n\nssh-copy-id {host}")
-
 
 class MadhatterTray(QSystemTrayIcon):
-    def __init__(self, app, icon_path=None):
+    def __init__(self, app):
         super().__init__()
         self.app = app
-        self.default_icon_path = icon_path or os.path.join(ICON_DIR, "idle.png")
-        
-        self.setIcon(QIcon(self.default_icon_path))
+        self.setIcon(QIcon(os.path.join(ICON_DIR, "idle.png")))
         self.setVisible(True)
 
         # Menu
@@ -833,7 +717,7 @@ class MadhatterTray(QSystemTrayIcon):
             self.setIcon(QIcon(os.path.join(ICON_DIR, "error.png")))
             self.setToolTip("Madhatter: Service Stopped")
         else:
-            self.setIcon(QIcon(self.default_icon_path))
+            self.setIcon(QIcon(os.path.join(ICON_DIR, "idle.png")))
             self.setToolTip("Madhatter: Idle")
 
     def open_folder(self):
@@ -872,10 +756,7 @@ class MadhatterTray(QSystemTrayIcon):
 
     def _notify(self, title, msg):
         """Send a desktop notification via notify-send (Wayland-compatible)."""
-        cmd = ['notify-send', title, msg]
-        if self.default_icon_path:
-            cmd.extend(['-i', self.default_icon_path])
-        subprocess.Popen(cmd)
+        subprocess.Popen(['notify-send', title, msg])
 
     def quit_app(self):
         QCoreApplication.quit()
@@ -888,14 +769,14 @@ def main():
         QMessageBox.critical(None, "Error", "System tray not available on this system!")
         sys.exit(1)
 
+    tray = MadhatterTray(app)
+
     # Set Application Icon
     # Check common locations
     app_icon_path = None
     possible_paths = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "icon.png"), # Local run (png)
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "icon.jpg"), # Local run (jpg)
-        "/usr/share/pixmaps/madhatter-drop.png", # Installed (png)
-        "/usr/share/pixmaps/madhatter-drop.jpg", # Installed (jpg)
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "icon.jpg"), # Local run
+        "/usr/share/pixmaps/madhatter-drop.jpg", # Installed
     ]
     for p in possible_paths:
         if os.path.exists(p):
@@ -905,25 +786,6 @@ def main():
     if app_icon_path:
         app.setWindowIcon(QIcon(app_icon_path))
 
-    # Initialize discovery and start advertising
-    discovery = None
-    if DiscoveryManager:
-        try:
-            discovery = DiscoveryManager()
-            if discovery.is_available():
-                discovery.start_advertising()
-        except Exception as e:
-            print(f"Discovery init failed: {e}")
-
-    tray = MadhatterTray(app, icon_path=app_icon_path)
-    
-    # Ensure advertisement stops on exit
-    def cleanup_discovery():
-        if discovery:
-            discovery.stop_advertising()
-            
-    app.aboutToQuit.connect(cleanup_discovery)
-    
     # Handle Ctrl+C
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 

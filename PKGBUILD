@@ -7,7 +7,7 @@ arch=('any')
 url="https://github.com/NModlin/madhatterDrop"
 license=('MIT')
 depends=('rsync' 'inotify-tools')
-optdepends=('python-pyqt6: for system tray icon' 'libnotify: for desktop notifications')
+optdepends=('python-pyqt6: for system tray icon' 'libnotify: for desktop notifications' 'avahi: for automated peer discovery')
 makedepends=('git')
 source=("git+${url}.git")
 sha256sums=('SKIP')
@@ -27,6 +27,7 @@ package() {
     
     # Install Python script and icons
     install -m 644 madhatter_tray.py "$pkgdir/usr/share/madhatter/madhatter_tray.py"
+    install -m 755 madhatter_discovery.py "$pkgdir/usr/share/madhatter/madhatter_discovery.py"
     install -m 644 icons/*.png "$pkgdir/usr/share/madhatter/icons/"
     
     # Install Service
@@ -34,7 +35,7 @@ package() {
 
     # Install App Icon
     install -d "$pkgdir/usr/share/pixmaps"
-    install -m 644 icon/icon.jpg "$pkgdir/usr/share/pixmaps/madhatter-drop.jpg"
+    install -m 644 icon/icon.png "$pkgdir/usr/share/pixmaps/madhatter-drop.png"
     
     # Install Desktop Entry
     install -m 644 madhatter-tray.desktop "$pkgdir/usr/share/applications/"

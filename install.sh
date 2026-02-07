@@ -82,6 +82,10 @@ if [ "$MODE" = "desktop" ]; then
     if ! python3 -c "import PyQt6" &>/dev/null; then
         MISSING+=("python-pyqt6")
     fi
+    if ! command -v avahi-browse &>/dev/null; then
+        log_warn "avahi-utils not found. Automated discovery will be disabled."
+        # We don't fail, just warn, as it's optional
+    fi
 fi
 
 if [ ${#MISSING[@]} -gt 0 ]; then
@@ -128,11 +132,16 @@ if [ "$MODE" = "desktop" ]; then
     log_info "Installing desktop tray app..."
     install -d /usr/share/madhatter/icons
     install -m 644 madhatter_tray.py /usr/share/madhatter/
+    install -m 755 madhatter_discovery.py /usr/share/madhatter/
     install -m 644 icons/*.png /usr/share/madhatter/icons/
 
     # Install main app icon
-    if [ -f "icon/icon.jpg" ]; then
-        log_info "Installing app icon..."
+    # Install main app icon
+    if [ -f "icon/icon.png" ]; then
+        log_info "Installing app icon (PNG)..."
+        install -m 644 icon/icon.png /usr/share/pixmaps/madhatter-drop.png
+    elif [ -f "icon/icon.jpg" ]; then
+        log_info "Installing app icon (JPG)..."
         install -m 644 icon/icon.jpg /usr/share/pixmaps/madhatter-drop.jpg
     fi
 
