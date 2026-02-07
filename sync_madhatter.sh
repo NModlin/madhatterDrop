@@ -27,6 +27,47 @@ MAX_VERSION_AGE_DAYS=7
 PEER_REGEX='^[a-zA-Z0-9._-]+(@[a-zA-Z0-9._-]+)?:[a-zA-Z0-9/._ -]+$'
 SHELL_META_CHARS='[;$`|&(){}<>\\\"'"'"']'
 
+# ---------------------------------------------------------------------------
+# Optional config file — overrides defaults above
+# Format: KEY=VALUE (one per line, # comments, blank lines ignored)
+# ---------------------------------------------------------------------------
+CONFIG_FILE="$HOME/.config/madhatter/config"
+ENCRYPT_AT_REST=""   # empty = disabled; "gpg" or "age" to enable
+
+if [ -f "$CONFIG_FILE" ]; then
+    while IFS='=' read -r key value; do
+        # Skip comments and blank lines
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        # Trim whitespace
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        # Remove surrounding quotes from value
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+
+        case "$key" in
+            SYNC_DIR)            SYNC_DIR="$value" ;;
+            PEERS_FILE)          PEERS_FILE="$value" ;;
+            STATUS_FILE)         STATUS_FILE="$value" ;;
+            LOG_FILE)            LOG_FILE="$value" ;;
+            MAX_LOG_BYTES)       MAX_LOG_BYTES="$value" ;;
+            MAX_LOG_FILES)       MAX_LOG_FILES="$value" ;;
+            MAX_VERSION_AGE_DAYS) MAX_VERSION_AGE_DAYS="$value" ;;
+            ENCRYPT_AT_REST)     ENCRYPT_AT_REST="$value" ;;
+            *)  ;; # ignore unknown keys
+        esac
+    done < "$CONFIG_FILE"
+
+    # Recompute derived paths after SYNC_DIR may have changed
+    VERSION_DIR="$SYNC_DIR/.versions"
+    CONFLICT_DIR="$SYNC_DIR/.conflicts"
+    IGNORE_FILE="$SYNC_DIR/.syncignore"
+fi
+
 # [M4] Shutdown machinery
 SHUTTING_DOWN=0
 SYNC_PIDS=()   # [O3] Track all background sync PIDs for parallel sync
@@ -121,6 +162,50 @@ prune_versions() {
 }
 
 # ---------------------------------------------------------------------------
+# Encryption at rest — encrypt a file in-place if ENCRYPT_AT_REST is set
+# ---------------------------------------------------------------------------
+encrypt_file() {
+    local file="$1"
+    [ -z "$ENCRYPT_AT_REST" ] && return 0
+    [ ! -f "$file" ] && return 0
+
+    case "$ENCRYPT_AT_REST" in
+        gpg)
+            if command -v gpg &>/dev/null; then
+                gpg --batch --yes --symmetric --cipher-algo AES256 \
+                    --passphrase-file "$HOME/.config/madhatter/encrypt.key" \
+                    --output "${file}.gpg" "$file" 2>/dev/null && rm -f "$file"
+            else
+                log "[ENCRYPT] gpg not found — skipping encryption for $file"
+            fi
+            ;;
+        age)
+            if command -v age &>/dev/null; then
+                local keyfile="$HOME/.config/madhatter/encrypt.key"
+                age -e -i "$keyfile" -o "${file}.age" "$file" 2>/dev/null && rm -f "$file"
+            else
+                log "[ENCRYPT] age not found — skipping encryption for $file"
+            fi
+            ;;
+        *)
+            log "[ENCRYPT] Unknown encryption method: $ENCRYPT_AT_REST"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Encrypt all new files in .versions/ after rsync --backup
+# ---------------------------------------------------------------------------
+encrypt_versions() {
+    [ -z "$ENCRYPT_AT_REST" ] && return 0
+    # Find unencrypted files (not .gpg or .age) and encrypt them
+    find "$VERSION_DIR" -type f ! -name '*.gpg' ! -name '*.age' -print0 2>/dev/null | \
+        while IFS= read -r -d '' vfile; do
+            encrypt_file "$vfile"
+        done
+}
+
+# ---------------------------------------------------------------------------
 # [O4] Conflict detection — save remote versions that would be overwritten
 # ---------------------------------------------------------------------------
 detect_conflicts() {
@@ -157,6 +242,7 @@ detect_conflicts() {
             mkdir -p "$(dirname "$conflict_dest")"
 
             if rsync -az "$peer/$rel_file" "$conflict_dest" 2>/dev/null; then
+                encrypt_file "$conflict_dest"
                 ((conflict_count++))
             fi
         fi
@@ -202,6 +288,7 @@ detect_pull_conflicts() {
             if [ -f "$local_file" ]; then
                 mkdir -p "$(dirname "$conflict_dest")"
                 if cp -a "$local_file" "$conflict_dest" 2>/dev/null; then
+                    encrypt_file "$conflict_dest"
                     ((conflict_count++))
                 fi
             fi
@@ -326,6 +413,10 @@ case "${1:-}" in
         echo "  --help, -h      Show this help message"
         echo ""
         echo "Without options, starts the sync daemon (pull + push, watch loop)."
+        echo ""
+        echo "Config: ~/.config/madhatter/config (KEY=VALUE, one per line)"
+        echo "  SYNC_DIR, PEERS_FILE, STATUS_FILE, LOG_FILE,"
+        echo "  MAX_LOG_BYTES, MAX_LOG_FILES, MAX_VERSION_AGE_DAYS, ENCRYPT_AT_REST"
         exit 0
         ;;
     "")
@@ -429,6 +520,9 @@ sync_to_peers() {
             "One or more peers failed. Check logs."
         return 1
     fi
+
+    # Encrypt any new version backups
+    encrypt_versions
 
     # [M5] Prune old versions after successful sync
     prune_versions

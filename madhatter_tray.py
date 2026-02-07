@@ -13,15 +13,74 @@ from PyQt6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox,
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QTimer, QCoreApplication
 
-# Constants
+# ---------------------------------------------------------------------------
+# Configuration — defaults, then override from ~/.config/madhatter/config
+# ---------------------------------------------------------------------------
 APP_NAME = "Madhatter Drop"
 ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+SERVICE_NAME = "madhatter-sync.service"
+
+# Defaults (same as sync_madhatter.sh)
+SYNC_DIR = os.path.expanduser("~/madhatterDrop")
+PEERS_FILE = os.path.expanduser("~/.config/madhatter/peers")
 STATUS_FILE = os.path.expanduser("~/.cache/madhatter/status")
 LOG_FILE = os.path.expanduser("~/.cache/madhatter/sync.log")
-VERSION_DIR = os.path.expanduser("~/madhatterDrop/.versions")
-CONFLICT_DIR = os.path.expanduser("~/madhatterDrop/.conflicts")
-SERVICE_NAME = "madhatter-sync.service"
-IGNORE_FILE = os.path.expanduser("~/madhatterDrop/.syncignore")
+
+ENCRYPT_AT_REST = ""  # empty = disabled; "gpg" or "age"
+
+_CONFIG_FILE = os.path.expanduser("~/.config/madhatter/config")
+if os.path.isfile(_CONFIG_FILE):
+    with open(_CONFIG_FILE, 'r') as _cf:
+        for _line in _cf:
+            _line = _line.strip()
+            if not _line or _line.startswith('#') or '=' not in _line:
+                continue
+            _key, _, _val = _line.partition('=')
+            _key = _key.strip()
+            _val = _val.strip().strip('"').strip("'")
+            if _key == 'SYNC_DIR':
+                SYNC_DIR = os.path.expanduser(_val)
+            elif _key == 'PEERS_FILE':
+                PEERS_FILE = os.path.expanduser(_val)
+            elif _key == 'STATUS_FILE':
+                STATUS_FILE = os.path.expanduser(_val)
+            elif _key == 'LOG_FILE':
+                LOG_FILE = os.path.expanduser(_val)
+            elif _key == 'ENCRYPT_AT_REST':
+                ENCRYPT_AT_REST = _val
+
+# Derived paths
+VERSION_DIR = os.path.join(SYNC_DIR, ".versions")
+CONFLICT_DIR = os.path.join(SYNC_DIR, ".conflicts")
+IGNORE_FILE = os.path.join(SYNC_DIR, ".syncignore")
+ENCRYPT_KEY = os.path.expanduser("~/.config/madhatter/encrypt.key")
+
+
+def decrypt_file(encrypted_path):
+    """Decrypt a .gpg or .age file to a temp plaintext path. Returns plaintext path or None."""
+    if not ENCRYPT_AT_REST:
+        return encrypted_path  # not encrypted
+    if not encrypted_path.endswith(('.gpg', '.age')):
+        return encrypted_path  # not an encrypted file
+
+    import tempfile
+    plaintext = tempfile.mktemp(suffix=os.path.basename(encrypted_path).rsplit('.', 1)[0])
+
+    try:
+        if encrypted_path.endswith('.gpg'):
+            subprocess.check_call([
+                'gpg', '--batch', '--yes', '--decrypt',
+                '--passphrase-file', ENCRYPT_KEY,
+                '--output', plaintext, encrypted_path
+            ], stderr=subprocess.DEVNULL)
+        elif encrypted_path.endswith('.age'):
+            subprocess.check_call([
+                'age', '-d', '-i', ENCRYPT_KEY,
+                '-o', plaintext, encrypted_path
+            ], stderr=subprocess.DEVNULL)
+        return plaintext
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 class VersionBrowser(QDialog):
     def __init__(self):
@@ -76,13 +135,26 @@ class VersionBrowser(QDialog):
         # rsync --backup with --suffix appends a timestamp like _20260203_190748
         # Strip that suffix to recover the original relative path within the sync dir.
         original_rel = re.sub(r'_\d{8}_\d{6}$', '', rel_path)
-        sync_dir = os.path.expanduser("~/madhatterDrop")
-        restore_target = os.path.join(sync_dir, original_rel)
+        # Strip encryption extension from restore target
+        for ext in ('.gpg', '.age'):
+            if original_rel.endswith(ext):
+                original_rel = original_rel[:-len(ext)]
+                break
+        restore_target = os.path.join(SYNC_DIR, original_rel)
+
+        # Decrypt if encrypted
+        source_path = decrypt_file(src_path)
+        if source_path is None:
+            QMessageBox.critical(self, "Error", "Failed to decrypt version file.")
+            return
+        _decrypted_tmp = source_path if source_path != src_path else None
 
         # [S3] Compute source checksum before restore
         try:
-            src_hash = self._sha256(src_path)
+            src_hash = self._sha256(source_path)
         except OSError as e:
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             QMessageBox.critical(self, "Error", f"Cannot read source file:\n{str(e)}")
             return
 
@@ -92,16 +164,20 @@ class VersionBrowser(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             return
 
         try:
             os.makedirs(os.path.dirname(restore_target), exist_ok=True)
-            shutil.copy2(src_path, restore_target)
+            shutil.copy2(source_path, restore_target)
 
             # [S3] Verify integrity after copy
             dst_hash = self._sha256(restore_target)
             if src_hash != dst_hash:
                 os.remove(restore_target)
+                if _decrypted_tmp:
+                    os.remove(_decrypted_tmp)
                 QMessageBox.critical(
                     self, "Integrity Error",
                     f"Checksum mismatch after restore!\n\n"
@@ -110,8 +186,12 @@ class VersionBrowser(QDialog):
                 )
                 return
 
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             QMessageBox.information(self, "Restored", f"File restored to:\n{restore_target}\n\n✓ Integrity verified")
         except Exception as e:
+            if _decrypted_tmp and os.path.exists(_decrypted_tmp):
+                os.remove(_decrypted_tmp)
             QMessageBox.critical(self, "Error", f"Failed to restore:\n{str(e)}")
 
     def prune_versions(self):
@@ -260,8 +340,12 @@ class ConflictBrowser(QDialog):
             file_rel = parts[1]
         else:
             file_rel = rel
-        sync_dir = os.path.expanduser("~/madhatterDrop")
-        target = os.path.join(sync_dir, file_rel)
+        # Strip encryption extension from target path
+        for ext in ('.gpg', '.age'):
+            if file_rel.endswith(ext):
+                file_rel = file_rel[:-len(ext)]
+                break
+        target = os.path.join(SYNC_DIR, file_rel)
         return conflict_path, target, rel
 
     def keep_local(self):
@@ -294,9 +378,18 @@ class ConflictBrowser(QDialog):
             return
         conflict_path, target, rel = sel
 
+        # Decrypt if encrypted
+        source_path = decrypt_file(conflict_path)
+        if source_path is None:
+            QMessageBox.critical(self, "Error", "Failed to decrypt conflict file.")
+            return
+        _decrypted_tmp = source_path if source_path != conflict_path else None
+
         try:
-            src_hash = VersionBrowser._sha256(conflict_path)
+            src_hash = VersionBrowser._sha256(source_path)
         except OSError as e:
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             QMessageBox.critical(self, "Error", f"Cannot read conflict file:\n{e}")
             return
 
@@ -307,16 +400,20 @@ class ConflictBrowser(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             return
 
         try:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(conflict_path, target)
+            shutil.copy2(source_path, target)
 
             # Verify integrity
             dst_hash = VersionBrowser._sha256(target)
             if src_hash != dst_hash:
                 os.remove(target)
+                if _decrypted_tmp:
+                    os.remove(_decrypted_tmp)
                 QMessageBox.critical(
                     self, "Integrity Error",
                     f"Checksum mismatch!\nSource: {src_hash[:16]}…\n"
@@ -324,6 +421,8 @@ class ConflictBrowser(QDialog):
                 )
                 return
 
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             os.remove(conflict_path)
             self._cleanup_empty_dirs(conflict_path)
             self.load_conflicts()
@@ -332,6 +431,8 @@ class ConflictBrowser(QDialog):
                 f"Replaced local with remote version.\n\n✓ Integrity verified",
             )
         except Exception as e:
+            if _decrypted_tmp and os.path.exists(_decrypted_tmp):
+                os.remove(_decrypted_tmp)
             QMessageBox.critical(self, "Error", f"Failed to resolve conflict:\n{e}")
 
     def keep_both(self):
@@ -340,6 +441,13 @@ class ConflictBrowser(QDialog):
         if not sel:
             return
         conflict_path, target, rel = sel
+
+        # Decrypt if encrypted
+        source_path = decrypt_file(conflict_path)
+        if source_path is None:
+            QMessageBox.critical(self, "Error", "Failed to decrypt conflict file.")
+            return
+        _decrypted_tmp = source_path if source_path != conflict_path else None
 
         # Add .remote before extension (or at end if no extension)
         base, ext = os.path.splitext(target)
@@ -352,11 +460,15 @@ class ConflictBrowser(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             return
 
         try:
             os.makedirs(os.path.dirname(both_target), exist_ok=True)
-            shutil.copy2(conflict_path, both_target)
+            shutil.copy2(source_path, both_target)
+            if _decrypted_tmp:
+                os.remove(_decrypted_tmp)
             os.remove(conflict_path)
             self._cleanup_empty_dirs(conflict_path)
             self.load_conflicts()
@@ -365,6 +477,8 @@ class ConflictBrowser(QDialog):
                 f"Both versions kept.\nRemote saved as:\n{both_target}",
             )
         except Exception as e:
+            if _decrypted_tmp and os.path.exists(_decrypted_tmp):
+                os.remove(_decrypted_tmp)
             QMessageBox.critical(self, "Error", f"Failed to resolve conflict:\n{e}")
 
     @staticmethod
@@ -377,6 +491,138 @@ class ConflictBrowser(QDialog):
                 parent = os.path.dirname(parent)
             except OSError:
                 break
+
+
+class PeerManager(QDialog):
+    """Dialog to add, remove, and test peers from the tray app."""
+
+    # Same regex as sync_madhatter.sh PEER_REGEX
+    PEER_REGEX = re.compile(r'^[a-zA-Z0-9._-]+(@[a-zA-Z0-9._-]+)?:[a-zA-Z0-9/._ -]+$')
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Madhatter Peer Manager")
+        self.resize(500, 350)
+
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Configured Peers:"))
+
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("Add Peer")
+        self.add_btn.clicked.connect(self.add_peer)
+        btn_row.addWidget(self.add_btn)
+
+        self.remove_btn = QPushButton("Remove Peer")
+        self.remove_btn.clicked.connect(self.remove_peer)
+        btn_row.addWidget(self.remove_btn)
+
+        self.test_btn = QPushButton("Test Peer")
+        self.test_btn.clicked.connect(self.test_peer)
+        btn_row.addWidget(self.test_btn)
+
+        layout.addLayout(btn_row)
+        self.setLayout(layout)
+        self.load_peers()
+
+    def load_peers(self):
+        """Load peers from the peers file."""
+        self.list_widget.clear()
+        if not os.path.isfile(PEERS_FILE):
+            return
+        try:
+            with open(PEERS_FILE, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    self.list_widget.addItem(line)
+        except OSError:
+            pass
+
+    def _save_peers(self):
+        """Write the current list back to the peers file atomically."""
+        import tempfile
+        peers = []
+        for i in range(self.list_widget.count()):
+            peers.append(self.list_widget.item(i).text())
+        try:
+            os.makedirs(os.path.dirname(PEERS_FILE), exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(PEERS_FILE))
+            with os.fdopen(fd, 'w') as f:
+                for p in peers:
+                    f.write(p + '\n')
+            os.replace(tmp, PEERS_FILE)
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Failed to save peers:\n{e}")
+
+    def add_peer(self):
+        """Prompt for a new peer and validate format."""
+        from PyQt6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(
+            self, "Add Peer",
+            "Enter peer (user@host:/path or host:/path):"
+        )
+        if not ok or not text.strip():
+            return
+        peer = text.strip()
+        if not self.PEER_REGEX.match(peer):
+            QMessageBox.warning(
+                self, "Invalid Peer",
+                f"Peer format is invalid:\n{peer}\n\n"
+                "Expected: [user@]host:/path"
+            )
+            return
+        # Check for duplicates
+        for i in range(self.list_widget.count()):
+            if self.list_widget.item(i).text() == peer:
+                QMessageBox.information(self, "Duplicate", "This peer is already configured.")
+                return
+        self.list_widget.addItem(peer)
+        self._save_peers()
+
+    def remove_peer(self):
+        """Remove the selected peer."""
+        item = self.list_widget.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Selection", "Select a peer first.")
+            return
+        reply = QMessageBox.question(
+            self, "Remove Peer",
+            f"Remove peer?\n\n{item.text()}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.list_widget.takeItem(self.list_widget.row(item))
+            self._save_peers()
+
+    def test_peer(self):
+        """Test SSH reachability of the selected peer."""
+        item = self.list_widget.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Selection", "Select a peer first.")
+            return
+        peer = item.text()
+        host = peer.split(':')[0]
+        try:
+            result = subprocess.run(
+                ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', host, 'exit'],
+                capture_output=True, timeout=10
+            )
+            if result.returncode == 0:
+                QMessageBox.information(self, "Peer Reachable", f"✓ {host} is reachable via SSH.")
+            else:
+                stderr = result.stderr.decode(errors='replace').strip()
+                QMessageBox.warning(
+                    self, "Peer Unreachable",
+                    f"✗ {host} is not reachable.\n\n{stderr}"
+                )
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "Timeout", f"SSH connection to {host} timed out (5s).")
+        except FileNotFoundError:
+            QMessageBox.critical(self, "Error", "ssh command not found.")
 
 
 class MadhatterTray(QSystemTrayIcon):
@@ -417,6 +663,10 @@ class MadhatterTray(QSystemTrayIcon):
         self.edit_ignore_action = QAction("Edit .syncignore", self)
         self.edit_ignore_action.triggered.connect(self.edit_ignore)
         self.menu.addAction(self.edit_ignore_action)
+
+        self.peers_action = QAction("Manage Peers", self)
+        self.peers_action.triggered.connect(self.manage_peers)
+        self.menu.addAction(self.peers_action)
 
         self.menu.addSeparator()
         self.quit_action = QAction("Quit Tray", self)
@@ -462,16 +712,14 @@ class MadhatterTray(QSystemTrayIcon):
             self.setToolTip("Madhatter: Idle")
 
     def open_folder(self):
-        folder = os.path.expanduser("~/madhatterDrop")
-        subprocess.Popen(['xdg-open', folder])
+        subprocess.Popen(['xdg-open', SYNC_DIR])
 
     def manual_sync(self):
         # Trigger sync by touching a file inside the directory?
         # Or using systemctl to restart service?
         # Or signals?
         # The script uses inotify, so touching a file works.
-        folder = os.path.expanduser("~/madhatterDrop")
-        trigger_file = os.path.join(folder, ".sync_trigger")
+        trigger_file = os.path.join(SYNC_DIR, ".sync_trigger")
         subprocess.run(['touch', trigger_file])
         self._notify("Sync Triggered", "Manual sync requested.")
 
@@ -486,6 +734,10 @@ class MadhatterTray(QSystemTrayIcon):
     def view_conflicts(self):
         self.conflict_browser = ConflictBrowser()
         self.conflict_browser.show()
+
+    def manage_peers(self):
+        self.peer_manager = PeerManager()
+        self.peer_manager.show()
 
     def edit_ignore(self):
         # Ensure the file exists before opening it

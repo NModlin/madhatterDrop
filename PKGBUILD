@@ -33,6 +33,9 @@ package() {
     
     # Install Desktop Entry
     install -m 644 madhatter-tray.desktop "$pkgdir/usr/share/applications/"
+
+    # Install License
+    install -Dm 644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     
     # Create wrapper for tray app
     echo '#!/bin/sh' > "$pkgdir/usr/bin/madhatter-tray"

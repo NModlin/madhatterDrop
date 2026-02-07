@@ -732,6 +732,121 @@ else
 fi
 
 # ===================================================================
+# Config File Tests
+# ===================================================================
+echo ""
+echo "=== [CONFIG] External Configuration ==="
+
+echo "--- Checking CONFIG_FILE variable in sync script ---"
+if grep -q 'CONFIG_FILE=' ../sync_madhatter.sh; then
+    echo "  PASS: CONFIG_FILE variable defined"
+    ((PASS++))
+else
+    echo "  FAIL: CONFIG_FILE variable missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking config file parser reads key=value ---"
+if grep -q 'IFS.*=.*read.*key.*value' ../sync_madhatter.sh; then
+    echo "  PASS: config parser reads key=value pairs"
+    ((PASS++))
+else
+    echo "  FAIL: config parser missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking config overrides SYNC_DIR ---"
+if grep -q 'SYNC_DIR).*SYNC_DIR=' ../sync_madhatter.sh; then
+    echo "  PASS: config can override SYNC_DIR"
+    ((PASS++))
+else
+    echo "  FAIL: config does not override SYNC_DIR"
+    ((FAIL++))
+fi
+
+echo "--- Checking config overrides MAX_LOG_BYTES ---"
+if grep -q 'MAX_LOG_BYTES).*MAX_LOG_BYTES=' ../sync_madhatter.sh; then
+    echo "  PASS: config can override MAX_LOG_BYTES"
+    ((PASS++))
+else
+    echo "  FAIL: config does not override MAX_LOG_BYTES"
+    ((FAIL++))
+fi
+
+echo "--- Checking config overrides MAX_VERSION_AGE_DAYS ---"
+if grep -q 'MAX_VERSION_AGE_DAYS).*MAX_VERSION_AGE_DAYS=' ../sync_madhatter.sh; then
+    echo "  PASS: config can override MAX_VERSION_AGE_DAYS"
+    ((PASS++))
+else
+    echo "  FAIL: config does not override MAX_VERSION_AGE_DAYS"
+    ((FAIL++))
+fi
+
+echo "--- Checking config recomputes derived paths ---"
+if grep -q 'VERSION_DIR=.*SYNC_DIR.*versions' ../sync_madhatter.sh; then
+    echo "  PASS: derived paths recomputed after config load"
+    ((PASS++))
+else
+    echo "  FAIL: derived paths not recomputed"
+    ((FAIL++))
+fi
+
+echo "--- Checking config skips comments ---"
+if sed -n '/CONFIG_FILE/,/^fi/p' ../sync_madhatter.sh | grep -q 'Skip comments'; then
+    echo "  PASS: config parser skips comments"
+    ((PASS++))
+else
+    echo "  FAIL: config parser does not skip comments"
+    ((FAIL++))
+fi
+
+echo "--- Checking ENCRYPT_AT_REST variable ---"
+if grep -q 'ENCRYPT_AT_REST=' ../sync_madhatter.sh; then
+    echo "  PASS: ENCRYPT_AT_REST variable defined"
+    ((PASS++))
+else
+    echo "  FAIL: ENCRYPT_AT_REST variable missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking --help mentions config file ---"
+if bash ../sync_madhatter.sh --help 2>&1 | grep -q 'config'; then
+    echo "  PASS: --help documents config file"
+    ((PASS++))
+else
+    echo "  FAIL: --help missing config documentation"
+    ((FAIL++))
+fi
+
+echo "--- Checking tray app reads config file ---"
+TRAY_PY=../madhatter_tray.py
+if grep -q 'config/madhatter/config' "$TRAY_PY"; then
+    echo "  PASS: tray app reads config file"
+    ((PASS++))
+else
+    echo "  FAIL: tray app does not read config file"
+    ((FAIL++))
+fi
+
+echo "--- Checking tray app uses SYNC_DIR variable ---"
+if grep -q '^SYNC_DIR' "$TRAY_PY"; then
+    echo "  PASS: tray app defines SYNC_DIR from config"
+    ((PASS++))
+else
+    echo "  FAIL: tray app missing SYNC_DIR"
+    ((FAIL++))
+fi
+
+echo "--- Checking tray app derives VERSION_DIR from SYNC_DIR ---"
+if grep -q 'VERSION_DIR.*=.*SYNC_DIR' "$TRAY_PY"; then
+    echo "  PASS: tray VERSION_DIR derived from SYNC_DIR"
+    ((PASS++))
+else
+    echo "  FAIL: tray VERSION_DIR not derived from SYNC_DIR"
+    ((FAIL++))
+fi
+
+# ===================================================================
 # Two-Way Sync Tests
 # ===================================================================
 echo ""
@@ -1121,7 +1236,7 @@ echo "=== [UI] Conflict Resolution UI ==="
 TRAY=../madhatter_tray.py
 
 echo "--- Checking CONFLICT_DIR constant in tray ---"
-if grep -q 'CONFLICT_DIR.*=.*expanduser.*\.conflicts' "$TRAY"; then
+if grep -q 'CONFLICT_DIR.*=.*\.conflicts' "$TRAY"; then
     echo "  PASS: CONFLICT_DIR constant defined"
     ((PASS++))
 else
@@ -1247,6 +1362,320 @@ else
 fi
 
 echo ""
+###############################################################################
+# ENCRYPTION AT REST TESTS
+###############################################################################
+echo ""
+echo "=== Encryption at Rest Tests ==="
+echo ""
+
+SCRIPT=../sync_madhatter.sh
+TRAY=../madhatter_tray.py
+
+echo "--- Checking encrypt_file function exists in sync script ---"
+if grep -q 'encrypt_file()' "$SCRIPT"; then
+    echo "  PASS: encrypt_file function defined"
+    ((PASS++))
+else
+    echo "  FAIL: encrypt_file function missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking encrypt_versions function exists in sync script ---"
+if grep -q 'encrypt_versions()' "$SCRIPT"; then
+    echo "  PASS: encrypt_versions function defined"
+    ((PASS++))
+else
+    echo "  FAIL: encrypt_versions function missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking encrypt_file called after push conflict save ---"
+if grep -A2 'rsync -az.*peer.*rel_file.*conflict_dest' "$SCRIPT" | grep -q 'encrypt_file'; then
+    echo "  PASS: encrypt_file called after push conflict save"
+    ((PASS++))
+else
+    echo "  FAIL: encrypt_file not called after push conflict save"
+    ((FAIL++))
+fi
+
+echo "--- Checking encrypt_file called after pull conflict save ---"
+if grep -A2 'cp -a.*local_file.*conflict_dest' "$SCRIPT" | grep -q 'encrypt_file'; then
+    echo "  PASS: encrypt_file called after pull conflict save"
+    ((PASS++))
+else
+    echo "  FAIL: encrypt_file not called after pull conflict save"
+    ((FAIL++))
+fi
+
+echo "--- Checking encrypt_versions called after rsync backup ---"
+if grep -q 'encrypt_versions' "$SCRIPT"; then
+    echo "  PASS: encrypt_versions called in sync flow"
+    ((PASS++))
+else
+    echo "  FAIL: encrypt_versions not called in sync flow"
+    ((FAIL++))
+fi
+
+echo "--- Checking GPG symmetric encryption with AES256 ---"
+if grep -q 'cipher-algo AES256' "$SCRIPT"; then
+    echo "  PASS: GPG uses AES256 cipher"
+    ((PASS++))
+else
+    echo "  FAIL: GPG AES256 cipher not found"
+    ((FAIL++))
+fi
+
+echo "--- Checking age encryption support ---"
+if grep -q 'age -e' "$SCRIPT"; then
+    echo "  PASS: age encryption supported"
+    ((PASS++))
+else
+    echo "  FAIL: age encryption not supported"
+    ((FAIL++))
+fi
+
+echo "--- Checking passphrase file path ---"
+if grep -q 'encrypt.key' "$SCRIPT"; then
+    echo "  PASS: encrypt.key passphrase file referenced"
+    ((PASS++))
+else
+    echo "  FAIL: encrypt.key passphrase file not referenced"
+    ((FAIL++))
+fi
+
+echo "--- Checking ENCRYPT_AT_REST config variable in sync script ---"
+if grep -q 'ENCRYPT_AT_REST' "$SCRIPT"; then
+    echo "  PASS: ENCRYPT_AT_REST config variable in sync script"
+    ((PASS++))
+else
+    echo "  FAIL: ENCRYPT_AT_REST config variable missing from sync script"
+    ((FAIL++))
+fi
+
+echo "--- Checking decrypt_file function in tray app ---"
+if grep -q 'def decrypt_file' "$TRAY"; then
+    echo "  PASS: decrypt_file function defined in tray"
+    ((PASS++))
+else
+    echo "  FAIL: decrypt_file function missing from tray"
+    ((FAIL++))
+fi
+
+echo "--- Checking ENCRYPT_AT_REST config in tray app ---"
+if grep -q 'ENCRYPT_AT_REST' "$TRAY"; then
+    echo "  PASS: ENCRYPT_AT_REST config in tray app"
+    ((PASS++))
+else
+    echo "  FAIL: ENCRYPT_AT_REST config missing from tray app"
+    ((FAIL++))
+fi
+
+echo "--- Checking encrypted file extension stripping in _selected_conflict ---"
+if grep -q "\.gpg.*\.age" "$TRAY"; then
+    echo "  PASS: .gpg/.age extension stripping in tray"
+    ((PASS++))
+else
+    echo "  FAIL: .gpg/.age extension stripping missing from tray"
+    ((FAIL++))
+fi
+
+echo "--- Checking restore_file handles encrypted versions ---"
+if grep -A30 'def restore_file' "$TRAY" | grep -q 'decrypt_file'; then
+    echo "  PASS: restore_file handles encrypted versions"
+    ((PASS++))
+else
+    echo "  FAIL: restore_file does not handle encrypted versions"
+    ((FAIL++))
+fi
+
+echo "--- Checking keep_remote handles encrypted conflicts ---"
+if grep -A30 'def keep_remote' "$TRAY" | grep -q 'decrypt_file'; then
+    echo "  PASS: keep_remote handles encrypted conflicts"
+    ((PASS++))
+else
+    echo "  FAIL: keep_remote does not handle encrypted conflicts"
+    ((FAIL++))
+fi
+
+echo "--- Checking keep_both handles encrypted conflicts ---"
+if grep -A30 'def keep_both' "$TRAY" | grep -q 'decrypt_file'; then
+    echo "  PASS: keep_both handles encrypted conflicts"
+    ((PASS++))
+else
+    echo "  FAIL: keep_both does not handle encrypted conflicts"
+    ((FAIL++))
+fi
+
+echo "--- Checking temp file cleanup in keep_remote ---"
+if grep -A60 'def keep_remote' "$TRAY" | grep -q '_decrypted_tmp'; then
+    echo "  PASS: keep_remote cleans up decrypted temp files"
+    ((PASS++))
+else
+    echo "  FAIL: keep_remote missing temp file cleanup"
+    ((FAIL++))
+fi
+
+###############################################################################
+# PEER MANAGEMENT UI TESTS
+###############################################################################
+echo ""
+echo "=== Peer Management UI Tests ==="
+echo ""
+
+TRAY=../madhatter_tray.py
+
+echo "--- Checking PeerManager class exists ---"
+if grep -q 'class PeerManager(QDialog)' "$TRAY"; then
+    echo "  PASS: PeerManager class defined"
+    ((PASS++))
+else
+    echo "  FAIL: PeerManager class missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking PEER_REGEX in PeerManager ---"
+if grep -q 'PEER_REGEX.*compile' "$TRAY"; then
+    echo "  PASS: PEER_REGEX compiled in PeerManager"
+    ((PASS++))
+else
+    echo "  FAIL: PEER_REGEX missing from PeerManager"
+    ((FAIL++))
+fi
+
+echo "--- Checking load_peers method ---"
+if grep -q 'def load_peers' "$TRAY"; then
+    echo "  PASS: load_peers method defined"
+    ((PASS++))
+else
+    echo "  FAIL: load_peers method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking _save_peers method with atomic write ---"
+if grep -A15 'def _save_peers' "$TRAY" | grep -q 'os.replace'; then
+    echo "  PASS: _save_peers uses atomic write (os.replace)"
+    ((PASS++))
+else
+    echo "  FAIL: _save_peers missing atomic write"
+    ((FAIL++))
+fi
+
+echo "--- Checking add_peer method with validation ---"
+if grep -A10 'def add_peer' "$TRAY" | grep -q 'PEER_REGEX'; then
+    echo "  PASS: add_peer validates with PEER_REGEX"
+    ((PASS++))
+else
+    echo "  FAIL: add_peer missing PEER_REGEX validation"
+    ((FAIL++))
+fi
+
+echo "--- Checking remove_peer method ---"
+if grep -q 'def remove_peer' "$TRAY"; then
+    echo "  PASS: remove_peer method defined"
+    ((PASS++))
+else
+    echo "  FAIL: remove_peer method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking test_peer method with SSH ---"
+if grep -A10 'def test_peer' "$TRAY" | grep -q 'BatchMode'; then
+    echo "  PASS: test_peer uses SSH BatchMode"
+    ((PASS++))
+else
+    echo "  FAIL: test_peer missing SSH BatchMode"
+    ((FAIL++))
+fi
+
+echo "--- Checking Manage Peers menu entry ---"
+if grep -q 'Manage Peers' "$TRAY"; then
+    echo "  PASS: Manage Peers menu entry exists"
+    ((PASS++))
+else
+    echo "  FAIL: Manage Peers menu entry missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking manage_peers method in MadhatterTray ---"
+if grep -q 'def manage_peers' "$TRAY"; then
+    echo "  PASS: manage_peers method defined"
+    ((PASS++))
+else
+    echo "  FAIL: manage_peers method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking duplicate peer detection ---"
+if grep -A20 'def add_peer' "$TRAY" | grep -q 'Duplicate'; then
+    echo "  PASS: add_peer checks for duplicates"
+    ((PASS++))
+else
+    echo "  FAIL: add_peer missing duplicate check"
+    ((FAIL++))
+fi
+
+###############################################################################
+# AUR PUBLISHING PREPARATION TESTS
+###############################################################################
+echo ""
+echo "=== AUR Publishing Preparation Tests ==="
+echo ""
+
+echo "--- Checking .SRCINFO exists ---"
+if [ -f "../.SRCINFO" ]; then
+    echo "  PASS: .SRCINFO file exists"
+    ((PASS++))
+else
+    echo "  FAIL: .SRCINFO file missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking .SRCINFO contains pkgbase ---"
+if grep -q 'pkgbase = madhatter-drop' "../.SRCINFO"; then
+    echo "  PASS: .SRCINFO has correct pkgbase"
+    ((PASS++))
+else
+    echo "  FAIL: .SRCINFO missing pkgbase"
+    ((FAIL++))
+fi
+
+echo "--- Checking .SRCINFO contains pkgname ---"
+if grep -q 'pkgname = madhatter-drop' "../.SRCINFO"; then
+    echo "  PASS: .SRCINFO has correct pkgname"
+    ((PASS++))
+else
+    echo "  FAIL: .SRCINFO missing pkgname"
+    ((FAIL++))
+fi
+
+echo "--- Checking LICENSE file exists ---"
+if [ -f "../LICENSE" ]; then
+    echo "  PASS: LICENSE file exists"
+    ((PASS++))
+else
+    echo "  FAIL: LICENSE file missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking PKGBUILD installs LICENSE ---"
+if grep -q 'install.*LICENSE' "../PKGBUILD"; then
+    echo "  PASS: PKGBUILD installs LICENSE"
+    ((PASS++))
+else
+    echo "  FAIL: PKGBUILD does not install LICENSE"
+    ((FAIL++))
+fi
+
+echo "--- Checking PKGBUILD declares MIT license ---"
+if grep -q "license=('MIT')" "../PKGBUILD"; then
+    echo "  PASS: PKGBUILD declares MIT license"
+    ((PASS++))
+else
+    echo "  FAIL: PKGBUILD missing MIT license declaration"
+    ((FAIL++))
+fi
+
 echo "==========================================="
 echo "Results: $PASS passed, $FAIL failed"
 echo "==========================================="

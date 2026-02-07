@@ -12,6 +12,9 @@ A lightweight, rsync-based file synchronization daemon for Linux desktops. Watch
 - **Parallel peer sync** — syncs to/from all peers concurrently
 - **Systemd integration** — `Type=notify` with `WatchdogSec=120` heartbeat; auto-restart on failure
 - **Security hardening** — peer validation regex blocks shell injection, `umask 077` for all created files, SHA-256 integrity checks on conflict resolution
+- **Encryption at rest** — optional GPG (AES-256) or age encryption for `.versions/` and `.conflicts/` files
+- **Externalized configuration** — all paths and thresholds configurable via `~/.config/madhatter/config`
+- **Peer management UI** — add, remove, and test peers from the system tray (SSH reachability check)
 - **Log rotation** — sync log rotated at 10 MB, keeps 3 rotated copies
 - **`.syncignore`** — rsync exclude file for patterns you don't want synced
 - **Atomic status writes** — tray app reads status safely via temp-file + `mv`
@@ -69,6 +72,31 @@ user@hostname:/home/user/madhatterDrop
 
 Lines starting with `#` are comments. Peers must match the format `[user@]host:/path` — shell metacharacters are rejected.
 
+### Config file (optional)
+
+Create `~/.config/madhatter/config` to override defaults:
+
+```
+SYNC_DIR=~/madhatterDrop
+PEERS_FILE=~/.config/madhatter/peers
+MAX_LOG_BYTES=10485760
+MAX_LOG_FILES=3
+MAX_VERSION_AGE_DAYS=7
+ENCRYPT_AT_REST=gpg
+```
+
+### Encryption at rest (optional)
+
+Set `ENCRYPT_AT_REST=gpg` (or `age`) in the config file and create a passphrase/key file:
+
+```bash
+mkdir -p ~/.config/madhatter
+echo "your-passphrase" > ~/.config/madhatter/encrypt.key
+chmod 600 ~/.config/madhatter/encrypt.key
+```
+
+When enabled, all files saved to `.versions/` and `.conflicts/` are encrypted in-place. The tray app decrypts transparently when restoring or resolving conflicts.
+
 ### Sync ignore
 
 Create `~/madhatterDrop/.syncignore` with rsync exclude patterns:
@@ -116,9 +144,14 @@ madhatter-sync --help          # Show help
 │   └── <peer_label>_local/   # Local versions saved before pull overwrites them
 └── (your files)
 
-~/.config/madhatter/peers     # Peer list
-~/.cache/madhatter/status     # Daemon status (IDLE / SYNCING / ERROR)
-~/.cache/madhatter/sync.log   # Sync log (rotated at 10 MB)
+~/.config/madhatter/
+├── peers                     # Peer list (one per line)
+├── config                    # Optional config overrides (KEY=VALUE)
+└── encrypt.key               # Encryption passphrase (if ENCRYPT_AT_REST is set)
+
+~/.cache/madhatter/
+├── status                    # Daemon status (IDLE / SYNCING / ERROR)
+└── sync.log                  # Sync log (rotated at 10 MB)
 ```
 
 ## How sync works
@@ -136,18 +169,20 @@ cd tests
 bash test_peer_validation.sh
 ```
 
-The test suite includes 128 tests: static analysis (grep-based validation of script structure), two-way sync tests, integration tests (actual rsync between temp directories), and conflict resolution UI tests.
+The test suite includes 170+ tests: static analysis (grep-based validation of script structure), two-way sync tests, integration tests (actual rsync between temp directories), conflict resolution UI tests, encryption at rest tests, peer management UI tests, and AUR publishing validation.
 
 ### Project structure
 
 | File | Lines | Purpose |
 |:---|:---|:---|
-| `sync_madhatter.sh` | 560 | Sync daemon (bash) |
-| `madhatter_tray.py` | 519 | System tray app (PyQt6) |
-| `tests/test_peer_validation.sh` | 1258 | Test suite |
+| `sync_madhatter.sh` | ~655 | Sync daemon (bash) |
+| `madhatter_tray.py` | ~770 | System tray app (PyQt6) |
+| `tests/test_peer_validation.sh` | ~1690 | Test suite |
 | `madhatter-sync.service` | 19 | Systemd user service |
 | `madhatter-tray.desktop` | 11 | Desktop autostart entry |
-| `PKGBUILD` | 42 | Arch Linux package build |
+| `PKGBUILD` | 44 | Arch Linux package build |
+| `.SRCINFO` | — | AUR source info (auto-generated) |
+| `LICENSE` | 21 | MIT license |
 
 ## License
 
