@@ -73,6 +73,15 @@ SHUTTING_DOWN=0
 SYNC_PIDS=()   # [O3] Track all background sync PIDs for parallel sync
 
 # ---------------------------------------------------------------------------
+# [H2] Headless hardening: Non-interactive SSH
+# ---------------------------------------------------------------------------
+# Ensure rsync doesn't hang on SSH prompts (password/host key) or network issues.
+# - BatchMode=yes: Fail instead of prompting for pass/key
+# - ConnectTimeout=10: Don't hang forever on unreachable peers
+# - StrictHostKeyChecking=accept-new: Auto-accept new host keys (OpenSSH 7.6+)
+export RSYNC_RSH="ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+
+# ---------------------------------------------------------------------------
 # Ensure directories exist
 # ---------------------------------------------------------------------------
 mkdir -p "$SYNC_DIR"

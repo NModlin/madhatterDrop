@@ -79,6 +79,41 @@ Proceed with the **Manual Installation** steps below.
     sudo install -m 644 madhatter-tray.desktop /usr/share/applications/
     ```
 
+## Headless / Server Installation
+
+If you are installing on a headless server (no GUI), follow these steps:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/NModlin/madhatterDrop.git
+    cd madhatterDrop
+    ```
+
+2.  **Install the sync daemon:**
+    ```bash
+    sudo install -m 755 sync_madhatter.sh /usr/bin/madhatter-sync
+    ```
+
+3.  **Install the systemd service:**
+    ```bash
+    mkdir -p ~/.config/systemd/user
+    cp madhatter-sync.service ~/.config/systemd/user/
+    # OR install globally for all users:
+    # sudo install -m 644 madhatter-sync.service /usr/lib/systemd/user/
+    ```
+
+4.  **Enable Linger (Critical for headless servers):**
+    For the user service to start at boot and persist after you logout, you must enable lingering for your user:
+    ```bash
+    sudo loginctl enable-linger $USER
+    ```
+
+5.  **Enable and start the service:**
+    ```bash
+    systemctl --user daemon-reload
+    systemctl --user enable --now madhatter-sync.service
+    ```
+
 ## Post-Installation Setup
 
 1.  **Enable and start the sync service:**
