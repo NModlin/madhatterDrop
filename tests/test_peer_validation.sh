@@ -731,6 +731,140 @@ else
     ((PASS++))
 fi
 
+# ===================================================================
+# Conflict Resolution UI Tests
+# ===================================================================
+echo ""
+echo "=== [UI] Conflict Resolution UI ==="
+
+TRAY=../madhatter_tray.py
+
+echo "--- Checking CONFLICT_DIR constant in tray ---"
+if grep -q 'CONFLICT_DIR.*=.*expanduser.*\.conflicts' "$TRAY"; then
+    echo "  PASS: CONFLICT_DIR constant defined"
+    ((PASS++))
+else
+    echo "  FAIL: CONFLICT_DIR constant missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking ConflictBrowser class exists ---"
+if grep -q 'class ConflictBrowser(QDialog)' "$TRAY"; then
+    echo "  PASS: ConflictBrowser class defined"
+    ((PASS++))
+else
+    echo "  FAIL: ConflictBrowser class missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking Resolve Conflicts menu entry ---"
+if grep -q 'Resolve Conflicts' "$TRAY"; then
+    echo "  PASS: Resolve Conflicts menu entry present"
+    ((PASS++))
+else
+    echo "  FAIL: Resolve Conflicts menu entry missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking view_conflicts method ---"
+if grep -q 'def view_conflicts' "$TRAY"; then
+    echo "  PASS: view_conflicts method defined"
+    ((PASS++))
+else
+    echo "  FAIL: view_conflicts method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking load_conflicts method ---"
+if grep -q 'def load_conflicts' "$TRAY"; then
+    echo "  PASS: load_conflicts method defined"
+    ((PASS++))
+else
+    echo "  FAIL: load_conflicts method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking keep_local resolution method ---"
+if grep -q 'def keep_local' "$TRAY"; then
+    echo "  PASS: keep_local method defined"
+    ((PASS++))
+else
+    echo "  FAIL: keep_local method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking keep_remote resolution method ---"
+if grep -q 'def keep_remote' "$TRAY"; then
+    echo "  PASS: keep_remote method defined"
+    ((PASS++))
+else
+    echo "  FAIL: keep_remote method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking keep_both resolution method ---"
+if grep -q 'def keep_both' "$TRAY"; then
+    echo "  PASS: keep_both method defined"
+    ((PASS++))
+else
+    echo "  FAIL: keep_both method missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking SHA-256 integrity check in keep_remote ---"
+if grep -A 20 'def keep_remote' "$TRAY" | grep -q '_sha256'; then
+    echo "  PASS: keep_remote uses SHA-256 integrity check"
+    ((PASS++))
+else
+    echo "  FAIL: keep_remote missing SHA-256 integrity check"
+    ((FAIL++))
+fi
+
+echo "--- Checking .remote suffix in keep_both ---"
+if grep -A 10 'def keep_both' "$TRAY" | grep -q '\.remote'; then
+    echo "  PASS: keep_both uses .remote suffix"
+    ((PASS++))
+else
+    echo "  FAIL: keep_both missing .remote suffix"
+    ((FAIL++))
+fi
+
+echo "--- Checking empty dir cleanup after resolution ---"
+if grep -q '_cleanup_empty_dirs' "$TRAY"; then
+    echo "  PASS: _cleanup_empty_dirs helper present"
+    ((PASS++))
+else
+    echo "  FAIL: _cleanup_empty_dirs helper missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking QHBoxLayout import for button row ---"
+if grep -q 'QHBoxLayout' "$TRAY"; then
+    echo "  PASS: QHBoxLayout imported"
+    ((PASS++))
+else
+    echo "  FAIL: QHBoxLayout not imported"
+    ((FAIL++))
+fi
+
+echo "--- Checking ConflictBrowser has Refresh button ---"
+if grep -A 50 'class ConflictBrowser' "$TRAY" | grep -q 'Refresh'; then
+    echo "  PASS: ConflictBrowser has Refresh button"
+    ((PASS++))
+else
+    echo "  FAIL: ConflictBrowser missing Refresh button"
+    ((FAIL++))
+fi
+
+echo "--- Checking Python syntax validity ---"
+if python3 -m py_compile "$TRAY" 2>/dev/null; then
+    echo "  PASS: madhatter_tray.py compiles without errors"
+    ((PASS++))
+else
+    echo "  FAIL: madhatter_tray.py has syntax errors"
+    ((FAIL++))
+fi
+
 echo ""
 echo "==========================================="
 echo "Results: $PASS passed, $FAIL failed"
