@@ -130,6 +130,12 @@ if [ "$MODE" = "desktop" ]; then
     install -m 644 madhatter_tray.py /usr/share/madhatter/
     install -m 644 icons/*.png /usr/share/madhatter/icons/
 
+    # Install main app icon
+    if [ -f "icon/icon.jpg" ]; then
+        log_info "Installing app icon..."
+        install -m 644 icon/icon.jpg /usr/share/pixmaps/madhatter-drop.jpg
+    fi
+
     # Tray wrapper
     cat <<EOF > /usr/bin/madhatter-tray
 #!/bin/sh

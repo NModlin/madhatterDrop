@@ -771,6 +771,21 @@ def main():
 
     tray = MadhatterTray(app)
 
+    # Set Application Icon
+    # Check common locations
+    app_icon_path = None
+    possible_paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon", "icon.jpg"), # Local run
+        "/usr/share/pixmaps/madhatter-drop.jpg", # Installed
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            app_icon_path = p
+            break
+            
+    if app_icon_path:
+        app.setWindowIcon(QIcon(app_icon_path))
+
     # Handle Ctrl+C
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 

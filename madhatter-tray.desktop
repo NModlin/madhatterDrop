@@ -2,7 +2,7 @@
 Name=Madhatter Drop
 Comment=P2P Delta Sync Tool
 Exec=madhatter-tray
-Icon=/usr/share/madhatter/icons/idle.png
+Icon=madhatter-drop
 Terminal=false
 Type=Application
 Categories=Utility;Network;

@@ -31,6 +31,10 @@ package() {
     
     # Install Service
     install -m 644 madhatter-sync.service "$pkgdir/usr/lib/systemd/user/"
+
+    # Install App Icon
+    install -d "$pkgdir/usr/share/pixmaps"
+    install -m 644 icon/icon.jpg "$pkgdir/usr/share/pixmaps/madhatter-drop.jpg"
     
     # Install Desktop Entry
     install -m 644 madhatter-tray.desktop "$pkgdir/usr/share/applications/"
