@@ -11,8 +11,7 @@ TimeoutStopSec=30
 WatchdogSec=120
 KillMode=mixed
 KillSignal=SIGTERM
-Environment=DISPLAY=:0
-Environment=XDG_RUNTIME_DIR=/run/user/%U
+KillSignal=SIGTERM
 
 [Install]
 WantedBy=default.target

@@ -120,6 +120,20 @@ sd_notify() {
 }
 
 # ---------------------------------------------------------------------------
+# [H1] Headless support: notification wrapper
+# ---------------------------------------------------------------------------
+send_notification() {
+    local title="$1"
+    local message="$2"
+    local urgency="${3:-normal}"
+
+    # Only try to notify if we have a display and notify-send is available
+    if [ -n "${DISPLAY:-}" ] && command -v notify-send &>/dev/null; then
+        notify-send -u "$urgency" "$title" "$message" 2>/dev/null || true
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # [M2] Log rotation — rotate when log exceeds MAX_LOG_BYTES
 # ---------------------------------------------------------------------------
 rotate_log() {
@@ -250,7 +264,7 @@ detect_conflicts() {
 
     if [ "$conflict_count" -gt 0 ]; then
         log "[CONFLICT] Saved $conflict_count remote file(s) from $peer to $CONFLICT_DIR/$peer_label/"
-        notify-send -u normal "Madhatter Sync — Conflicts" \
+        send_notification "Madhatter Sync — Conflicts" \
             "$conflict_count file(s) had remote changes. Saved to .conflicts/$peer_label/"
     fi
 }
@@ -297,7 +311,7 @@ detect_pull_conflicts() {
 
     if [ "$conflict_count" -gt 0 ]; then
         log "[CONFLICT] Saved $conflict_count local file(s) before pull from $peer to $CONFLICT_DIR/${peer_label}_local/"
-        notify-send -u normal "Madhatter Sync — Pull Conflicts" \
+        send_notification "Madhatter Sync — Pull Conflicts" \
             "$conflict_count local file(s) will be overwritten by pull from $peer_label. Saved to .conflicts/${peer_label}_local/"
     fi
 }
@@ -436,7 +450,8 @@ for cmd in rsync inotifywait; do
     if ! command -v "$cmd" &> /dev/null; then
         log "Error: $cmd could not be found."
         update_status "ERROR"
-        notify-send -u critical "Madhatter Sync Error" "Missing dependency: $cmd"
+        # Since this is a critical failure, we try to notify, but don't fail if we can't
+        send_notification "Madhatter Sync Error" "Missing dependency: $cmd" "critical"
         exit 1
     fi
 done
@@ -516,8 +531,8 @@ sync_to_peers() {
 
     if [ "$any_failed" -eq 1 ]; then
         update_status "ERROR"
-        notify-send -u critical "Madhatter Sync Failed" \
-            "One or more peers failed. Check logs."
+        send_notification "Madhatter Sync Failed" \
+            "One or more peers failed. Check logs." "critical"
         return 1
     fi
 

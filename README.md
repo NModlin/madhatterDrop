@@ -2,7 +2,11 @@
 
 **P2P Delta Sync Tool with Wayland Tray Support**
 
-A lightweight, rsync-based file synchronization daemon for Linux desktops. Watches a local directory for changes, syncs bidirectionally with configured peers over SSH, and provides a PyQt6 system tray app for status monitoring and conflict resolution.
+Madhatter Drop is a peer-to-peer file synchronization tool designed for local networks. It uses `rsync` for efficient delta transfers and `inotify` for real-time monitoring.
+
+It supports both:
+- **Desktop use**: With a system tray icon and desktop notifications.
+- **Headless use**: As a background daemon on servers.
 
 ## Features
 
@@ -88,6 +92,18 @@ Create `~/madhatterDrop/.syncignore` with rsync exclude patterns:
 .DS_Store
 node_modules/
 ```
+
+### Headless Installation (Server)
+For servers without a GUI (no X11/Wayland), install only the core dependencies:
+```bash
+# Arch
+sudo pacman -S rsync inotify-tools openssh git
+
+# Debian/Ubuntu
+sudo apt install rsync inotify-tools openssh-client git
+```
+
+You can then run the sync service directly or via systemd (user mode). The system tray icon and notifications will simply be disabled.
 
 ## Usage
 
