@@ -32,28 +32,9 @@ A lightweight, rsync-based file synchronization daemon for Linux desktops. Watch
 
 ## Installation
 
-### From source
+Please refer to [INSTALL.md](INSTALL.md) for detailed installation instructions for Arch Linux, Debian/Ubuntu, Fedora, and manual installation from source.
 
-```bash
-git clone https://github.com/NModlin/maddhatterDrop.git
-cd maddhatterDrop
-
-# Install the sync daemon
-sudo install -m 755 sync_madhatter.sh /usr/bin/madhatter-sync
-
-# Install the tray app
-sudo mkdir -p /usr/share/madhatter/icons
-sudo install -m 644 madhatter_tray.py /usr/share/madhatter/
-sudo install -m 644 icons/*.png /usr/share/madhatter/icons/
-printf '#!/bin/sh\nexec python3 /usr/share/madhatter/madhatter_tray.py "$@"\n' | sudo tee /usr/bin/madhatter-tray > /dev/null
-sudo chmod 755 /usr/bin/madhatter-tray
-
-# Install systemd service and desktop entry
-sudo install -m 644 madhatter-sync.service /usr/lib/systemd/user/
-sudo install -m 644 madhatter-tray.desktop /usr/share/applications/
-```
-
-### Arch Linux (PKGBUILD)
+### Quick Start (Arch Linux)
 
 ```bash
 makepkg -si
