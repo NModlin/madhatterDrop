@@ -880,6 +880,107 @@ class MadhatterTray(QSystemTrayIcon):
     def quit_app(self):
         QCoreApplication.quit()
 
+    def auto_add_peers(self, peers):
+        """Automatically add discovered peers to the peers file."""
+        import tempfile
+        
+        # Read existing peers
+        existing_peers = set()
+        if os.path.isfile(PEERS_FILE):
+            try:
+                with open(PEERS_FILE, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            existing_peers.add(line)
+            except OSError:
+                pass
+        
+        # Add new peers
+        added_count = 0
+        for p in peers:
+            user = p.get('user', 'user')
+            ip = p['ip']
+            path = f"/home/{user}/madhatterDrop"
+            peer_str = f"{user}@{ip}:{path}"
+            
+            if peer_str not in existing_peers:
+                try:
+                    os.makedirs(os.path.dirname(PEERS_FILE), exist_ok=True)
+                    with open(PEERS_FILE, 'a') as f:
+                        f.write(peer_str + '\n')
+                    existing_peers.add(peer_str)
+                    added_count += 1
+                except OSError:
+                    pass
+        
+        if added_count > 0:
+            QMessageBox.information(
+                None,
+                "Peers Added",
+                f"Added {added_count} peer(s).\n\nYou may need to set up SSH keys for each peer.\nRun: ssh-copy-id <peer>"
+            )
+
+    def set_discovery_manager(self, discovery):
+        """Set the discovery manager and optionally start auto-discovery."""
+        self.discovery_manager = discovery
+        if discovery and discovery.is_available():
+            # Start auto-discovery after a short delay (5 seconds after app start)
+            self.auto_discovery_timer = QTimer()
+            self.auto_discovery_timer.setSingleShot(True)
+            self.auto_discovery_timer.timeout.connect(self.start_auto_discovery)
+            self.auto_discovery_timer.start(5000)  # 5 second delay
+
+    def start_auto_discovery(self):
+        """Automatically scan for peers and prompt user if found."""
+        if not self.discovery_manager:
+            return
+            
+        # Check if we already have peers configured
+        if os.path.isfile(PEERS_FILE):
+            try:
+                with open(PEERS_FILE, 'r') as f:
+                    has_peers = any(line.strip() and not line.startswith('#') for line in f)
+                    if has_peers:
+                        # Already configured, skip auto-discovery
+                        return
+            except OSError:
+                pass
+        
+        # Scan for peers
+        peers = self.discovery_manager.browse_peers()
+        
+        if peers:
+            self.handle_discovered_peers(peers)
+
+    def handle_discovered_peers(self, peers):
+        """Show notification and dialog for discovered peers."""
+        peer_count = len(peers)
+        
+        # Send notification
+        self._notify(
+            "Madhatter - Peers Found!",
+            f"Found {peer_count} peer(s) on your network. Click to connect."
+        )
+        
+        # Show dialog with discovered peers
+        from PyQt6.QtWidgets import QInputDialog
+        
+        peer_list = [f"{p['hostname']} ({p['ip']}) - User: {p.get('user', '?')}" for p in peers]
+        
+        reply = QMessageBox.question(
+            None,
+            "Connect to Peers?",
+            f"Found {peer_count} Madhatter peer(s) on your network:\n\n" + "\n".join(peer_list[:5]) +
+            (f"\n... and {peer_count - 5} more" if peer_count > 5 else "") +
+            "\n\nWould you like to add them now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Open peer manager with auto-add logic
+            self.auto_add_peers(peers)
+
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -916,6 +1017,10 @@ def main():
             print(f"Discovery init failed: {e}")
 
     tray = MadhatterTray(app, icon_path=app_icon_path)
+    
+    # Connect discovery to tray for auto-discovery
+    if discovery:
+        tray.set_discovery_manager(discovery)
     
     # Ensure advertisement stops on exit
     def cleanup_discovery():
