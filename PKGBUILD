@@ -4,7 +4,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="P2P Delta Sync Tool with Wayland Tray Support"
 arch=('any')
-url="https://github.com/NModlin/maddhatterDrop"
+url="https://github.com/NModlin/madhatterDrop"
 license=('MIT')
 depends=('rsync' 'inotify-tools' 'python-pyqt6' 'libnotify')
 makedepends=('git')
@@ -12,7 +12,7 @@ source=("git+${url}.git")
 sha256sums=('SKIP')
 
 package() {
-    cd "$srcdir/maddhatterDrop"
+    cd "$srcdir/madhatterDrop"
 
     # Install directories
     install -d "$pkgdir/usr/bin"

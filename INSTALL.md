@@ -21,8 +21,8 @@ sudo pacman -S rsync inotify-tools python-pyqt6 libnotify openssh git
 You can install `madhatter-drop` directly from the AUR if it's available, walk through the manual steps below, or use the provided `PKGBUILD`:
 
 ```bash
-git clone https://github.com/NModlin/maddhatterDrop.git
-cd maddhatterDrop
+git clone https://github.com/NModlin/madhatterDrop.git
+cd madhatterDrop
 makepkg -si
 ```
 
@@ -49,8 +49,8 @@ Proceed with the **Manual Installation** steps below.
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/NModlin/maddhatterDrop.git
-    cd maddhatterDrop
+    git clone https://github.com/NModlin/madhatterDrop.git
+    cd madhatterDrop
     ```
 
 2.  **Install the sync daemon:**
