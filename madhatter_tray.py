@@ -27,6 +27,7 @@ STATUS_FILE = os.path.expanduser("~/.cache/madhatter/status")
 LOG_FILE = os.path.expanduser("~/.cache/madhatter/sync.log")
 
 ENCRYPT_AT_REST = ""  # empty = disabled; "gpg" or "age"
+MAX_VERSION_AGE_DAYS = 7
 
 _CONFIG_FILE = os.path.expanduser("~/.config/madhatter/config")
 if os.path.isfile(_CONFIG_FILE):
@@ -48,6 +49,11 @@ if os.path.isfile(_CONFIG_FILE):
                 LOG_FILE = os.path.expanduser(_val)
             elif _key == 'ENCRYPT_AT_REST':
                 ENCRYPT_AT_REST = _val
+            elif _key == 'MAX_VERSION_AGE_DAYS':
+                try:
+                    MAX_VERSION_AGE_DAYS = int(_val)
+                except ValueError:
+                    pass
 
 # Derived paths
 VERSION_DIR = os.path.join(SYNC_DIR, ".versions")
@@ -64,7 +70,8 @@ def decrypt_file(encrypted_path):
         return encrypted_path  # not an encrypted file
 
     import tempfile
-    plaintext = tempfile.mktemp(suffix=os.path.basename(encrypted_path).rsplit('.', 1)[0])
+    fd, plaintext = tempfile.mkstemp(suffix=os.path.basename(encrypted_path).rsplit('.', 1)[0])
+    os.close(fd)
 
     try:
         if encrypted_path.endswith('.gpg'):
@@ -80,6 +87,8 @@ def decrypt_file(encrypted_path):
             ], stderr=subprocess.DEVNULL)
         return plaintext
     except (subprocess.CalledProcessError, FileNotFoundError):
+        if os.path.exists(plaintext):
+            os.remove(plaintext)
         return None
 
 class VersionBrowser(QDialog):
@@ -99,7 +108,7 @@ class VersionBrowser(QDialog):
         self.restore_btn.clicked.connect(self.restore_file)
         layout.addWidget(self.restore_btn)
 
-        self.prune_btn = QPushButton("Prune Old Versions (>7 days)")
+        self.prune_btn = QPushButton(f"Prune Old Versions (>{MAX_VERSION_AGE_DAYS} days)")
         self.prune_btn.clicked.connect(self.prune_versions)
         layout.addWidget(self.prune_btn)
 
@@ -195,12 +204,12 @@ class VersionBrowser(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to restore:\n{str(e)}")
 
     def prune_versions(self):
-        """Delete version files older than 7 days and refresh the list."""
+        """Delete version files older than MAX_VERSION_AGE_DAYS and refresh the list."""
         if not os.path.exists(VERSION_DIR):
             QMessageBox.information(self, "Prune", "No versions directory found.")
             return
 
-        max_age_days = 7
+        max_age_days = MAX_VERSION_AGE_DAYS
         import time
         cutoff = time.time() - (max_age_days * 86400)
         pruned = 0

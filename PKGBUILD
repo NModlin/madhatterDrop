@@ -1,4 +1,4 @@
-# Maintainer: Katalyst <katalyst@example.com>
+# Maintainer: NateDog <47695509+NModlin@users.noreply.github.com>
 pkgname=madhatter-drop
 pkgver=1.0.0
 pkgrel=1
