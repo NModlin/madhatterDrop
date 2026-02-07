@@ -170,6 +170,52 @@ detect_conflicts() {
 }
 
 # ---------------------------------------------------------------------------
+# [O4] Pull conflict detection — save local versions before pull overwrites
+# ---------------------------------------------------------------------------
+detect_pull_conflicts() {
+    local peer="$1"
+    local host="${peer%%:*}"
+    local peer_label="${host//[^a-zA-Z0-9._-]/_}"
+
+    # Dry-run rsync from remote to local to find files that would be updated
+    local dry_output
+    dry_output=$(rsync -avzn --itemize-changes --exclude-from="$IGNORE_FILE" \
+        --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
+        --exclude=".conflicts" \
+        "$peer/" "$SYNC_DIR" 2>/dev/null) || return 0
+
+    # Parse for incoming file updates (>f = received file, not >f+++ which is new)
+    local conflict_count=0
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\>f[^+] ]]; then
+            local rel_file="${line#* }"
+            rel_file="${rel_file#"${rel_file%%[![:space:]]*}"}"
+            rel_file="${rel_file%"${rel_file##*[![:space:]]}"}"
+
+            if [ -z "$rel_file" ]; then
+                continue
+            fi
+
+            # Save the LOCAL version before pull overwrites it
+            local local_file="$SYNC_DIR/$rel_file"
+            local conflict_dest="$CONFLICT_DIR/${peer_label}_local/$rel_file"
+            if [ -f "$local_file" ]; then
+                mkdir -p "$(dirname "$conflict_dest")"
+                if cp -a "$local_file" "$conflict_dest" 2>/dev/null; then
+                    ((conflict_count++))
+                fi
+            fi
+        fi
+    done <<< "$dry_output"
+
+    if [ "$conflict_count" -gt 0 ]; then
+        log "[CONFLICT] Saved $conflict_count local file(s) before pull from $peer to $CONFLICT_DIR/${peer_label}_local/"
+        notify-send -u normal "Madhatter Sync — Pull Conflicts" \
+            "$conflict_count local file(s) will be overwritten by pull from $peer_label. Saved to .conflicts/${peer_label}_local/"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # [S1] Peer validation
 # ---------------------------------------------------------------------------
 validate_peer() {
@@ -259,18 +305,27 @@ check_peers() {
 }
 
 # Handle CLI flags
+SYNC_MODE="full"   # full | push | pull
 case "${1:-}" in
     --check-peers)
         check_peers
+        ;;
+    --push-only)
+        SYNC_MODE="push"
+        ;;
+    --pull-only)
+        SYNC_MODE="pull"
         ;;
     --help|-h)
         echo "Usage: $(basename "$0") [OPTIONS]"
         echo ""
         echo "Options:"
         echo "  --check-peers   Test SSH reachability of all configured peers and exit"
+        echo "  --push-only     Only push local changes to peers (no pull)"
+        echo "  --pull-only     Only pull remote changes from peers (no push)"
         echo "  --help, -h      Show this help message"
         echo ""
-        echo "Without options, starts the sync daemon (watch + sync loop)."
+        echo "Without options, starts the sync daemon (pull + push, watch loop)."
         exit 0
         ;;
     "")
@@ -384,10 +439,93 @@ sync_to_peers() {
 }
 
 # ---------------------------------------------------------------------------
+# Pull from peers — fetch remote changes to local
+# ---------------------------------------------------------------------------
+pull_from_peers() {
+    # Abort early if shutting down
+    [[ "$SHUTTING_DOWN" -eq 1 ]] && return 0
+
+    # Read peers from config file (one per line)
+    if [ ! -f "$PEERS_FILE" ] || [ ! -s "$PEERS_FILE" ]; then
+        return 0
+    fi
+
+    local peers=()
+    while IFS= read -r peer; do
+        [[ -z "$peer" || "$peer" =~ ^[[:space:]]*# ]] && continue
+        validate_peer "$peer" && peers+=("$peer")
+    done < "$PEERS_FILE"
+
+    if [ ${#peers[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    log "[PULL] Pulling changes from ${#peers[@]} peer(s)..."
+
+    # Launch all peer pulls in parallel
+    local pull_pids=()
+    for peer in "${peers[@]}"; do
+        [[ "$SHUTTING_DOWN" -eq 1 ]] && break
+
+        log "[PULL] Pulling from $peer..."
+
+        (
+            detect_pull_conflicts "$peer"
+            rsync -avz --exclude-from="$IGNORE_FILE" \
+                --exclude=".versions" --exclude=".sync_trigger" --exclude=".syncignore" \
+                --exclude=".conflicts" \
+                --backup --backup-dir="$VERSION_DIR" --suffix="_$(date +%Y%m%d_%H%M%S)" \
+                "$peer/" "$SYNC_DIR" >> "$LOG_FILE" 2>&1
+        ) &
+        pull_pids+=($!)
+    done
+
+    # Wait for all pulls and collect results
+    local any_failed=0
+    for i in "${!pull_pids[@]}"; do
+        wait "${pull_pids[$i]}" 2>/dev/null
+        local rc=$?
+
+        [[ "$SHUTTING_DOWN" -eq 1 ]] && break
+
+        if [ $rc -eq 0 ]; then
+            log "[PULL] Pull from ${peers[$i]} successful."
+        else
+            log "[PULL] Error pulling from ${peers[$i]} (exit code $rc)."
+            any_failed=1
+        fi
+    done
+
+    if [ "$any_failed" -eq 1 ]; then
+        log "[PULL] One or more pulls failed."
+        return 1
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Full sync — pull first (get remote changes), then push (send local changes)
+# ---------------------------------------------------------------------------
+full_sync() {
+    case "$SYNC_MODE" in
+        pull)
+            pull_from_peers
+            ;;
+        push)
+            sync_to_peers
+            ;;
+        *)
+            pull_from_peers || log "[SYNC] Pull phase completed with errors, continuing to push"
+            sync_to_peers
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # [O2] Initial sync on startup — run once before entering the watch loop
 # ---------------------------------------------------------------------------
 log "[STARTUP] Running initial sync..."
-sync_to_peers || log "[STARTUP] Initial sync completed with errors, continuing to watch mode"
+full_sync || log "[STARTUP] Initial sync completed with errors, continuing to watch mode"
 
 # [O1] Tell systemd we're ready (Type=notify)
 sd_notify --ready
@@ -415,7 +553,7 @@ while [[ "$SHUTTING_DOWN" -eq 0 ]]; do
     # Wait a moment for settling (debounce)
     sleep 2
 
-    sync_to_peers || true
+    full_sync || true
 
     # Wait before loop restarts to avoid rapid-fire loops on mass changes
     sleep 1

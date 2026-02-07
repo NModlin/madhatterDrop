@@ -1,0 +1,155 @@
+# Madhatter Drop
+
+**P2P Delta Sync Tool with Wayland Tray Support**
+
+A lightweight, rsync-based file synchronization daemon for Linux desktops. Watches a local directory for changes, syncs bidirectionally with configured peers over SSH, and provides a PyQt6 system tray app for status monitoring and conflict resolution.
+
+## Features
+
+- **Two-way sync** — pull remote changes then push local changes, with configurable `--push-only` / `--pull-only` modes
+- **Conflict detection & resolution UI** — automatically detects conflicting files on both push and pull; resolve via system tray dialog (keep local, keep remote, or keep both)
+- **Version backup** — every overwritten file is saved to `.versions/` with a timestamp suffix; old versions pruned after 7 days
+- **Parallel peer sync** — syncs to/from all peers concurrently
+- **Systemd integration** — `Type=notify` with `WatchdogSec=120` heartbeat; auto-restart on failure
+- **Security hardening** — peer validation regex blocks shell injection, `umask 077` for all created files, SHA-256 integrity checks on conflict resolution
+- **Log rotation** — sync log rotated at 10 MB, keeps 3 rotated copies
+- **`.syncignore`** — rsync exclude file for patterns you don't want synced
+- **Atomic status writes** — tray app reads status safely via temp-file + `mv`
+- **Graceful shutdown** — `SIGTERM`/`SIGINT` handlers drain in-flight syncs before exit
+
+## Requirements
+
+| Package | Purpose |
+|:---|:---|
+| `rsync` | File synchronization |
+| `inotify-tools` | Filesystem change detection (`inotifywait`) |
+| `python-pyqt6` | System tray GUI |
+| `libnotify` | Desktop notifications (`notify-send`) |
+| `openssh` | SSH transport for rsync |
+
+## Installation
+
+### From source
+
+```bash
+git clone https://github.com/NModlin/maddhatterDrop.git
+cd maddhatterDrop
+
+# Install the sync daemon
+sudo install -m 755 sync_madhatter.sh /usr/bin/madhatter-sync
+
+# Install the tray app
+sudo mkdir -p /usr/share/madhatter/icons
+sudo install -m 644 madhatter_tray.py /usr/share/madhatter/
+sudo install -m 644 icons/*.png /usr/share/madhatter/icons/
+printf '#!/bin/sh\nexec python3 /usr/share/madhatter/madhatter_tray.py "$@"\n' | sudo tee /usr/bin/madhatter-tray > /dev/null
+sudo chmod 755 /usr/bin/madhatter-tray
+
+# Install systemd service and desktop entry
+sudo install -m 644 madhatter-sync.service /usr/lib/systemd/user/
+sudo install -m 644 madhatter-tray.desktop /usr/share/applications/
+```
+
+### Arch Linux (PKGBUILD)
+
+```bash
+makepkg -si
+```
+
+## Configuration
+
+### Peers
+
+Add one peer per line to `~/.config/madhatter/peers`:
+
+```
+user@hostname:/home/user/madhatterDrop
+192.168.1.50:/home/alice/madhatterDrop
+```
+
+Lines starting with `#` are comments. Peers must match the format `[user@]host:/path` — shell metacharacters are rejected.
+
+### Sync ignore
+
+Create `~/madhatterDrop/.syncignore` with rsync exclude patterns:
+
+```
+*.tmp
+*.swp
+.DS_Store
+node_modules/
+```
+
+## Usage
+
+### Start the sync daemon
+
+```bash
+systemctl --user enable --now madhatter-sync.service
+```
+
+### Start the tray app
+
+```bash
+madhatter-tray
+```
+
+Or add `madhatter-tray.desktop` to your autostart directory.
+
+### CLI flags
+
+```
+madhatter-sync --check-peers   # Test SSH reachability of all peers
+madhatter-sync --push-only     # Only push local → peers (no pull)
+madhatter-sync --pull-only     # Only pull peers → local (no push)
+madhatter-sync --help          # Show help
+```
+
+## Directory structure
+
+```
+~/madhatterDrop/              # Synced directory (watched by inotifywait)
+├── .syncignore               # Rsync exclude patterns
+├── .versions/                # Backup of overwritten files (auto-pruned after 7 days)
+├── .conflicts/               # Conflict snapshots
+│   ├── <peer_label>/         # Remote versions saved before push overwrites them
+│   └── <peer_label>_local/   # Local versions saved before pull overwrites them
+└── (your files)
+
+~/.config/madhatter/peers     # Peer list
+~/.cache/madhatter/status     # Daemon status (IDLE / SYNCING / ERROR)
+~/.cache/madhatter/sync.log   # Sync log (rotated at 10 MB)
+```
+
+## How sync works
+
+1. **Pull phase** — `rsync -avz` from each peer to local (no `--delete`; safe — won't remove local-only files). Conflicting local files are saved to `.conflicts/<peer>_local/` before overwrite.
+2. **Push phase** — `rsync -avz --delete` from local to each peer (local is authoritative). Conflicting remote files are saved to `.conflicts/<peer>/` before overwrite.
+3. Both phases run peers in parallel and use `--backup --backup-dir=.versions/` to preserve every overwritten file.
+
+## Development
+
+### Running tests
+
+```bash
+cd tests
+bash test_peer_validation.sh
+```
+
+The test suite includes 128 tests: static analysis (grep-based validation of script structure), two-way sync tests, integration tests (actual rsync between temp directories), and conflict resolution UI tests.
+
+### Project structure
+
+| File | Lines | Purpose |
+|:---|:---|:---|
+| `sync_madhatter.sh` | 560 | Sync daemon (bash) |
+| `madhatter_tray.py` | 519 | System tray app (PyQt6) |
+| `tests/test_peer_validation.sh` | 1258 | Test suite |
+| `madhatter-sync.service` | 19 | Systemd user service |
+| `madhatter-tray.desktop` | 11 | Desktop autostart entry |
+| `PKGBUILD` | 42 | Arch Linux package build |
+
+## License
+
+MIT
+

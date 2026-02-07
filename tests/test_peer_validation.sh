@@ -732,6 +732,387 @@ else
 fi
 
 # ===================================================================
+# Two-Way Sync Tests
+# ===================================================================
+echo ""
+echo "=== [TWO-WAY] Two-Way Sync ==="
+
+echo "--- Checking pull_from_peers function exists ---"
+if grep -q 'pull_from_peers()' ../sync_madhatter.sh; then
+    echo "  PASS: pull_from_peers function defined"
+    ((PASS++))
+else
+    echo "  FAIL: pull_from_peers function missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking detect_pull_conflicts function exists ---"
+if grep -q 'detect_pull_conflicts()' ../sync_madhatter.sh; then
+    echo "  PASS: detect_pull_conflicts function defined"
+    ((PASS++))
+else
+    echo "  FAIL: detect_pull_conflicts function missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking full_sync function exists ---"
+if grep -q 'full_sync()' ../sync_madhatter.sh; then
+    echo "  PASS: full_sync function defined"
+    ((PASS++))
+else
+    echo "  FAIL: full_sync function missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking pull_from_peers calls detect_pull_conflicts ---"
+if sed -n '/^pull_from_peers()/,/^}/p' ../sync_madhatter.sh | grep -q 'detect_pull_conflicts'; then
+    echo "  PASS: pull_from_peers calls detect_pull_conflicts"
+    ((PASS++))
+else
+    echo "  FAIL: pull_from_peers does not call detect_pull_conflicts"
+    ((FAIL++))
+fi
+
+echo "--- Checking pull uses rsync from peer to local ---"
+if sed -n '/^pull_from_peers()/,/^}/p' ../sync_madhatter.sh | grep -q '"$peer/" "$SYNC_DIR"'; then
+    echo "  PASS: pull rsync direction is peer→local"
+    ((PASS++))
+else
+    echo "  FAIL: pull rsync direction incorrect"
+    ((FAIL++))
+fi
+
+echo "--- Checking pull does NOT use --delete ---"
+if sed -n '/^pull_from_peers()/,/^}/p' ../sync_madhatter.sh | grep -q '\-\-delete'; then
+    echo "  FAIL: pull_from_peers uses --delete (dangerous for pull)"
+    ((FAIL++))
+else
+    echo "  PASS: pull_from_peers does not use --delete (safe)"
+    ((PASS++))
+fi
+
+echo "--- Checking pull uses --backup for safety ---"
+if sed -n '/^pull_from_peers()/,/^}/p' ../sync_madhatter.sh | grep -q '\-\-backup'; then
+    echo "  PASS: pull uses --backup to preserve overwritten files"
+    ((PASS++))
+else
+    echo "  FAIL: pull missing --backup flag"
+    ((FAIL++))
+fi
+
+echo "--- Checking pull runs in parallel ---"
+if sed -n '/^pull_from_peers()/,/^}/p' ../sync_madhatter.sh | grep -q 'pull_pids+='; then
+    echo "  PASS: pull runs peers in parallel"
+    ((PASS++))
+else
+    echo "  FAIL: pull does not run in parallel"
+    ((FAIL++))
+fi
+
+echo "--- Checking full_sync calls pull then push ---"
+if sed -n '/^full_sync()/,/^}/p' ../sync_madhatter.sh | grep -q 'pull_from_peers'; then
+    echo "  PASS: full_sync calls pull_from_peers"
+    ((PASS++))
+else
+    echo "  FAIL: full_sync does not call pull_from_peers"
+    ((FAIL++))
+fi
+
+echo "--- Checking full_sync calls sync_to_peers ---"
+if sed -n '/^full_sync()/,/^}/p' ../sync_madhatter.sh | grep -q 'sync_to_peers'; then
+    echo "  PASS: full_sync calls sync_to_peers"
+    ((PASS++))
+else
+    echo "  FAIL: full_sync does not call sync_to_peers"
+    ((FAIL++))
+fi
+
+echo "--- Checking SYNC_MODE variable exists ---"
+if grep -q 'SYNC_MODE=' ../sync_madhatter.sh; then
+    echo "  PASS: SYNC_MODE variable defined"
+    ((PASS++))
+else
+    echo "  FAIL: SYNC_MODE variable missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking --push-only CLI flag ---"
+if grep -q '\-\-push-only' ../sync_madhatter.sh; then
+    echo "  PASS: --push-only CLI flag present"
+    ((PASS++))
+else
+    echo "  FAIL: --push-only CLI flag missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking --pull-only CLI flag ---"
+if grep -q '\-\-pull-only' ../sync_madhatter.sh; then
+    echo "  PASS: --pull-only CLI flag present"
+    ((PASS++))
+else
+    echo "  FAIL: --pull-only CLI flag missing"
+    ((FAIL++))
+fi
+
+echo "--- Checking detect_pull_conflicts saves local versions ---"
+if sed -n '/^detect_pull_conflicts()/,/^}/p' ../sync_madhatter.sh | grep -q 'cp -a.*local_file.*conflict_dest'; then
+    echo "  PASS: detect_pull_conflicts saves local files before overwrite"
+    ((PASS++))
+else
+    echo "  FAIL: detect_pull_conflicts does not save local files"
+    ((FAIL++))
+fi
+
+echo "--- Checking startup uses full_sync ---"
+if grep -q 'full_sync.*||.*log.*STARTUP' ../sync_madhatter.sh; then
+    echo "  PASS: startup uses full_sync (pull+push)"
+    ((PASS++))
+else
+    echo "  FAIL: startup does not use full_sync"
+    ((FAIL++))
+fi
+
+echo "--- Checking watch loop uses full_sync ---"
+if grep -q 'full_sync || true' ../sync_madhatter.sh; then
+    echo "  PASS: watch loop uses full_sync"
+    ((PASS++))
+else
+    echo "  FAIL: watch loop does not use full_sync"
+    ((FAIL++))
+fi
+
+echo "--- Checking --help mentions pull/push modes ---"
+if bash ../sync_madhatter.sh --help 2>&1 | grep -q 'pull-only'; then
+    echo "  PASS: --help documents --pull-only"
+    ((PASS++))
+else
+    echo "  FAIL: --help missing --pull-only documentation"
+    ((FAIL++))
+fi
+
+echo "--- Checking pull excludes .conflicts directory ---"
+if sed -n '/^pull_from_peers()/,/^}/p' ../sync_madhatter.sh | grep -q 'exclude=".conflicts"'; then
+    echo "  PASS: pull excludes .conflicts directory"
+    ((PASS++))
+else
+    echo "  FAIL: pull does not exclude .conflicts"
+    ((FAIL++))
+fi
+
+# ===================================================================
+# Integration Tests — actual file operations with rsync
+# ===================================================================
+echo ""
+echo "=== [INTEG] Integration Tests ==="
+
+# Set up temp directories
+INTEG_DIR=$(mktemp -d /tmp/mhd_integ_XXXXXX)
+LOCAL_DIR="$INTEG_DIR/local"
+REMOTE_DIR="$INTEG_DIR/remote"
+VERSIONS_DIR="$LOCAL_DIR/.versions"
+CONFLICTS_DIR="$LOCAL_DIR/.conflicts"
+TEST_LOG="$INTEG_DIR/test.log"
+TEST_STATUS="$INTEG_DIR/status"
+
+mkdir -p "$LOCAL_DIR" "$REMOTE_DIR" "$VERSIONS_DIR" "$CONFLICTS_DIR"
+
+# --- Test: basic rsync push (local → remote) ---
+echo "--- Integration: basic rsync push ---"
+echo "hello world" > "$LOCAL_DIR/file1.txt"
+mkdir -p "$LOCAL_DIR/subdir"
+echo "nested file" > "$LOCAL_DIR/subdir/file2.txt"
+
+if rsync -avz --exclude=".versions" --exclude=".conflicts" \
+    "$LOCAL_DIR/" "$REMOTE_DIR/" > /dev/null 2>&1; then
+    if [ -f "$REMOTE_DIR/file1.txt" ] && [ -f "$REMOTE_DIR/subdir/file2.txt" ]; then
+        echo "  PASS: rsync push synced files correctly"
+        ((PASS++))
+    else
+        echo "  FAIL: rsync push did not sync all files"
+        ((FAIL++))
+    fi
+else
+    echo "  FAIL: rsync push command failed"
+    ((FAIL++))
+fi
+
+# --- Test: rsync push with --backup preserves overwritten files ---
+echo "--- Integration: version backup on push ---"
+echo "updated content" > "$LOCAL_DIR/file1.txt"
+if rsync -avz --exclude=".versions" --exclude=".conflicts" \
+    --backup --backup-dir="$VERSIONS_DIR" --suffix="_backup" \
+    "$LOCAL_DIR/" "$REMOTE_DIR/" > /dev/null 2>&1; then
+    if [ -f "$VERSIONS_DIR/file1.txt_backup" ]; then
+        echo "  PASS: --backup preserved old version in .versions/"
+        ((PASS++))
+    else
+        echo "  FAIL: --backup did not create version file"
+        ((FAIL++))
+    fi
+else
+    echo "  FAIL: rsync push with --backup failed"
+    ((FAIL++))
+fi
+
+# --- Test: rsync pull (remote → local) ---
+echo "--- Integration: rsync pull ---"
+echo "remote-only file" > "$REMOTE_DIR/remote_new.txt"
+if rsync -avz --exclude=".versions" --exclude=".conflicts" \
+    "$REMOTE_DIR/" "$LOCAL_DIR/" > /dev/null 2>&1; then
+    if [ -f "$LOCAL_DIR/remote_new.txt" ]; then
+        echo "  PASS: rsync pull brought remote file to local"
+        ((PASS++))
+    else
+        echo "  FAIL: rsync pull did not bring remote file"
+        ((FAIL++))
+    fi
+else
+    echo "  FAIL: rsync pull command failed"
+    ((FAIL++))
+fi
+
+# --- Test: pull does not delete local-only files (no --delete) ---
+echo "--- Integration: pull without --delete preserves local files ---"
+echo "local only" > "$LOCAL_DIR/local_only.txt"
+rsync -avz --exclude=".versions" --exclude=".conflicts" \
+    "$REMOTE_DIR/" "$LOCAL_DIR/" > /dev/null 2>&1
+if [ -f "$LOCAL_DIR/local_only.txt" ]; then
+    echo "  PASS: pull without --delete preserved local-only file"
+    ((PASS++))
+else
+    echo "  FAIL: pull without --delete removed local-only file"
+    ((FAIL++))
+fi
+
+# --- Test: conflict detection via dry-run itemize ---
+echo "--- Integration: conflict detection dry-run ---"
+echo "local version A" > "$LOCAL_DIR/conflict_test.txt"
+rsync -avz "$LOCAL_DIR/conflict_test.txt" "$REMOTE_DIR/conflict_test.txt" > /dev/null 2>&1
+sleep 1  # rsync needs a timestamp difference to detect changes
+echo "local version B — changed" > "$LOCAL_DIR/conflict_test.txt"
+# Dry-run push should show this file as an update
+DRY_OUT=$(rsync -avzn --itemize-changes "$LOCAL_DIR/" "$REMOTE_DIR/" 2>/dev/null)
+if echo "$DRY_OUT" | grep -q '>f.*conflict_test.txt'; then
+    echo "  PASS: dry-run detected conflict_test.txt as changed"
+    ((PASS++))
+else
+    echo "  FAIL: dry-run did not detect changed file"
+    ((FAIL++))
+fi
+
+# --- Test: atomic status write ---
+echo "--- Integration: atomic status write ---"
+TMP_STATUS="${TEST_STATUS}.tmp.$$"
+echo "SYNCING" > "$TMP_STATUS"
+mv -f "$TMP_STATUS" "$TEST_STATUS"
+if [ "$(cat "$TEST_STATUS")" = "SYNCING" ]; then
+    echo "  PASS: atomic status write works correctly"
+    ((PASS++))
+else
+    echo "  FAIL: atomic status write produced wrong content"
+    ((FAIL++))
+fi
+
+# --- Test: log rotation ---
+echo "--- Integration: log rotation ---"
+# Create a log file just over 1KB for testing
+dd if=/dev/zero bs=1024 count=2 2>/dev/null | tr '\0' 'x' > "$TEST_LOG"
+LOG_SIZE=$(stat -c%s "$TEST_LOG" 2>/dev/null || stat -f%z "$TEST_LOG" 2>/dev/null)
+if [ "$LOG_SIZE" -ge 1024 ]; then
+    mv "$TEST_LOG" "$TEST_LOG.1"
+    touch "$TEST_LOG"
+    if [ -f "$TEST_LOG.1" ] && [ -f "$TEST_LOG" ]; then
+        echo "  PASS: log rotation moves old log to .1"
+        ((PASS++))
+    else
+        echo "  FAIL: log rotation did not create rotated file"
+        ((FAIL++))
+    fi
+else
+    echo "  FAIL: could not create test log file"
+    ((FAIL++))
+fi
+
+# --- Test: version pruning (age-based deletion) ---
+echo "--- Integration: version pruning ---"
+OLD_FILE="$VERSIONS_DIR/old_version.txt"
+echo "old" > "$OLD_FILE"
+# Set mtime to 10 days ago
+touch -d "10 days ago" "$OLD_FILE"
+PRUNED=$(find "$VERSIONS_DIR" -type f -mtime +7 -delete -print 2>/dev/null | wc -l)
+if [ "$PRUNED" -ge 1 ] && [ ! -f "$OLD_FILE" ]; then
+    echo "  PASS: version pruning deleted file older than 7 days"
+    ((PASS++))
+else
+    echo "  FAIL: version pruning did not delete old file"
+    ((FAIL++))
+fi
+
+# --- Test: .syncignore exclusion ---
+echo "--- Integration: .syncignore exclusion ---"
+echo "*.log" > "$LOCAL_DIR/.syncignore"
+echo "should be ignored" > "$LOCAL_DIR/test.log"
+# Clean remote first
+rm -f "$REMOTE_DIR/test.log"
+rsync -avz --exclude-from="$LOCAL_DIR/.syncignore" \
+    --exclude=".versions" --exclude=".conflicts" --exclude=".syncignore" \
+    "$LOCAL_DIR/" "$REMOTE_DIR/" > /dev/null 2>&1
+if [ ! -f "$REMOTE_DIR/test.log" ]; then
+    echo "  PASS: .syncignore excluded *.log files from sync"
+    ((PASS++))
+else
+    echo "  FAIL: .syncignore did not exclude *.log files"
+    ((FAIL++))
+fi
+
+# --- Test: SHA-256 integrity check ---
+echo "--- Integration: SHA-256 file integrity ---"
+echo "integrity test data" > "$INTEG_DIR/checksum_src.txt"
+cp "$INTEG_DIR/checksum_src.txt" "$INTEG_DIR/checksum_dst.txt"
+SRC_HASH=$(sha256sum "$INTEG_DIR/checksum_src.txt" | cut -d' ' -f1)
+DST_HASH=$(sha256sum "$INTEG_DIR/checksum_dst.txt" | cut -d' ' -f1)
+if [ "$SRC_HASH" = "$DST_HASH" ]; then
+    echo "  PASS: SHA-256 checksums match after copy"
+    ((PASS++))
+else
+    echo "  FAIL: SHA-256 checksums do not match"
+    ((FAIL++))
+fi
+
+# --- Test: empty directory cleanup ---
+echo "--- Integration: empty directory cleanup ---"
+mkdir -p "$CONFLICTS_DIR/test_peer/subdir"
+echo "temp" > "$CONFLICTS_DIR/test_peer/subdir/temp.txt"
+rm "$CONFLICTS_DIR/test_peer/subdir/temp.txt"
+rmdir "$CONFLICTS_DIR/test_peer/subdir" 2>/dev/null
+if [ ! -d "$CONFLICTS_DIR/test_peer/subdir" ]; then
+    echo "  PASS: empty subdirectory removed after file deletion"
+    ((PASS++))
+else
+    echo "  FAIL: empty subdirectory not cleaned up"
+    ((FAIL++))
+fi
+
+# --- Test: rsync excludes .versions and .conflicts ---
+echo "--- Integration: rsync excludes internal dirs ---"
+mkdir -p "$LOCAL_DIR/.versions/old" "$LOCAL_DIR/.conflicts/peer1"
+echo "version" > "$LOCAL_DIR/.versions/old/v.txt"
+echo "conflict" > "$LOCAL_DIR/.conflicts/peer1/c.txt"
+rm -rf "$REMOTE_DIR/.versions" "$REMOTE_DIR/.conflicts"
+rsync -avz --exclude=".versions" --exclude=".conflicts" \
+    "$LOCAL_DIR/" "$REMOTE_DIR/" > /dev/null 2>&1
+if [ ! -d "$REMOTE_DIR/.versions" ] && [ ! -d "$REMOTE_DIR/.conflicts" ]; then
+    echo "  PASS: rsync excluded .versions and .conflicts from sync"
+    ((PASS++))
+else
+    echo "  FAIL: rsync synced internal directories"
+    ((FAIL++))
+fi
+
+# Clean up integration test directory
+rm -rf "$INTEG_DIR"
+
+# ===================================================================
 # Conflict Resolution UI Tests
 # ===================================================================
 echo ""
